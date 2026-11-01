@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "name": "Synthetic paired-rail satin",
+  "objects": [
+    {
+      "id": 1,
+      "name": "Curved column",
+      "contours": [],
+      "bezier_segments": [],
+      "satin_column": {
+        "left": [
+          {
+            "x": 15.0,
+            "y": 10.0
+          },
+          {
+            "x": 20.0,
+            "y": 25.0
+          },
+          {
+            "x": 40.0,
+            "y": 40.0
+          }
+        ],
+        "right": [
+          {
+            "x": 22.0,
+            "y": 10.0
+          },
+          {
+            "x": 27.0,
+            "y": 22.0
+          },
+          {
+            "x": 44.0,
+            "y": 34.0
+          }
+        ]
+      },
+      "color": [
+        35,
+        100,
+        180
+      ],
+      "settings": {
+        "kind": "Satin",
+        "spacing_mm": 0.4,
+        "length_mm": 8.0,
+        "angle_deg": 0.0,
+        "auto_angle": false,
+        "underlay": true,
+        "pull_comp_mm": 0.0,
+        "tie_in": true,
+        "tie_off": true
+      },
+      "visible": true
+    }
+  ],
+  "width_mm": 100.0
+}

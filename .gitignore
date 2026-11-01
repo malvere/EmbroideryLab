@@ -1,0 +1,36 @@
+# Build outputs and generated evidence stay local.
+**/target/
+/dist/
+/outputs/
+/reports/
+/publication/
+**/__pycache__/
+*.log
+*.tmp
+
+# User artwork, research material and local tool distributions are not public.
+/samples/
+/binaries/
+/ghidra-projects/
+/.impeccable/
+/.codex/
+/tools/winlibs/
+/tools/llvm-mingw*/
+/embroidery-engine/.cargo/config.toml
+
+# Credentials and machine-local configuration.
+.env
+.env.*
+!.env.example
+**/credentials*
+*.token
+*.pem
+*.key
+*.pfx
+*.p12
+*.exe
+*.dll
+*.zip
+*.7z
+
+# Original synthetic test fixtures under tests/fixtures remain versioned.
