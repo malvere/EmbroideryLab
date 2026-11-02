@@ -91,12 +91,7 @@ impl Editor {
         let Some(preview) = &self.import_preview else {
             return;
         };
-        let result = import::load_image_with_options(
-            &preview.path,
-            self.import_width_mm,
-            &self.raster_options,
-        )
-        .and_then(|project| {
+        let result = self.trace_import_preview().and_then(|project| {
             if let Some(previous) = &self.region_preview {
                 previous.apply_overrides_to(project)
             } else {
@@ -163,6 +158,8 @@ impl Editor {
                         self.snapshot();
                         self.project = project;
                         self.selected = 0;
+                        self.selection_anchor = None;
+                        self.merge_selection.clear();
                         self.clear_selection();
                         self.cancel_draft();
                         self.restore_source(ctx);
@@ -252,6 +249,7 @@ impl Editor {
                 );
             self.clear_selection();
             self.merge_selection.clear();
+            self.selection_anchor = None;
             self.cancel_draft();
             self.changed();
         }
@@ -276,6 +274,7 @@ impl Editor {
                 );
             self.clear_selection();
             self.merge_selection.clear();
+            self.selection_anchor = None;
             self.cancel_draft();
             self.changed();
         }
@@ -546,7 +545,7 @@ impl Editor {
         ui.separator();
         ui.collapsing(language.text("Regions and objects"), |ui| {
             ui.small(
-                language.text("Ctrl-click object names to select several objects for merging."),
+                language.text("Shift-click: select a range. Ctrl-click: toggle a layer. Ctrl+A: select all layers."),
             );
             if ui.button(language.text("Split region")).clicked() {
                 self.cancel_draft();

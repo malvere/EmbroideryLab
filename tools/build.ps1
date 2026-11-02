@@ -1,6 +1,7 @@
 param([switch]$Headless, [switch]$Release)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path $PSScriptRoot -Parent
+& (Join-Path $PSScriptRoot 'setup-pdfium.ps1') | Out-Null
 $cargoPath = Join-Path $env:USERPROFILE '.cargo\bin'
 $gccPath = Join-Path $taskRoot 'tools\winlibs\mingw64\bin'
 $taskPriorPath = $env:Path

@@ -77,7 +77,11 @@ impl SourceImage {
         validate_dimensions(image.width(), image.height())?;
         let mut edge = 1800;
         loop {
-            let resized = image.thumbnail(edge, edge);
+            let resized = if image.width() > edge || image.height() > edge {
+                image.thumbnail(edge, edge)
+            } else {
+                image.clone()
+            };
             let mut bytes = Cursor::new(Vec::new());
             resized
                 .write_to(&mut bytes, image::ImageFormat::Png)

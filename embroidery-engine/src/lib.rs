@@ -8,6 +8,7 @@ pub mod dst;
 pub mod engine;
 pub mod import;
 pub mod model;
+pub mod pdf_import;
 pub mod persistence;
 pub mod quality;
 pub mod region_edit;

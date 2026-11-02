@@ -106,6 +106,7 @@ function Copy-DependencyLicenses($Metadata, [string]$Destination) {
 
 $temporaryStage = $null
 try {
+    $pdfium = & (Join-Path $PSScriptRoot 'setup-pdfium.ps1') -Profiles release
     Push-Location $crateRoot
     try {
         $compiler = (& rustc --version --verbose) -join "`n"
@@ -131,6 +132,13 @@ try {
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     $imports = [ordered]@{}
     $runtimeDlls = @{}
+    # PDFium is loaded dynamically, so it is not listed in either executable's
+    # PE imports. Bundle and audit it explicitly using the pinned setup result.
+    Copy-Item -LiteralPath $pdfium.LibraryPath -Destination (Join-Path $stage 'pdfium.dll')
+    $runtimeDlls['pdfium.dll'] = @(Get-ImportedDlls $pdfium.LibraryPath)
+    foreach ($dependency in $runtimeDlls['pdfium.dll']) {
+        if (-not (Test-SystemDll $dependency)) { throw "Unreviewed PDFium dependency $dependency; do not publish this package." }
+    }
     foreach ($binary in @('embroidery-lab.exe', 'embroidery-cli.exe')) {
         $source = Join-Path $crateRoot "target\release\$binary"
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Release binary missing: $source" }
@@ -163,6 +171,11 @@ try {
         }
     }
     Copy-DependencyLicenses $metadata (Join-Path $stage 'THIRD_PARTY_LICENSES')
+    $pdfiumLegalDestination = Join-Path $stage "THIRD_PARTY_LICENSES\pdfium-$($pdfium.Build)"
+    New-Item -ItemType Directory -Force -Path $pdfiumLegalDestination | Out-Null
+    Copy-Item -LiteralPath (Join-Path $pdfium.LicenseDirectory 'LICENSE') -Destination (Join-Path $pdfiumLegalDestination 'LICENSE')
+    Copy-Item -LiteralPath (Join-Path $pdfium.LicenseDirectory 'licenses') -Destination $pdfiumLegalDestination -Recurse
+    $pdfium | Select-Object Build, ArchiveUrl, ArchiveSha256, LibrarySha256 | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $pdfiumLegalDestination 'PROVENANCE.json') -Encoding utf8
     $rustLegalRoot = Join-Path $rustSysroot 'share\doc\rust'
     $rustLegalDestination = Join-Path $stage 'THIRD_PARTY_LICENSES\rust-standard-library'
     $rustLibraryCopyright = Join-Path $rustLegalRoot 'COPYRIGHT-library.html'
@@ -176,7 +189,7 @@ try {
             Get-ChildItem -LiteralPath $rustLicenseDirectory -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $rustLicenseDestination $_.Name) }
         }
     }
-    $buildInfo = [ordered]@{ version=$Version; source_commit=$SourceCommit; target='x86_64-pc-windows-gnu'; features=@('gui'); capture_feature=$false; compiler=$compiler; imports=$imports; bundled_runtime_dlls=@($runtimeDlls.Keys | Sort-Object) }
+    $buildInfo = [ordered]@{ version=$Version; source_commit=$SourceCommit; target='x86_64-pc-windows-gnu'; features=@('gui'); capture_feature=$false; compiler=$compiler; imports=$imports; bundled_runtime_dlls=@($runtimeDlls.Keys | Sort-Object); pdfium_build=$pdfium.Build; pdfium_sha256=$pdfium.LibrarySha256 }
     $buildInfo | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stage 'BUILD-INFO.json') -Encoding utf8
     $buildInfo | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'build-info.json') -Encoding utf8
     # Normalize archive timestamps; this also avoids including local extraction
@@ -187,7 +200,14 @@ try {
     Compress-Archive -LiteralPath $stage -DestinationPath $archive -CompressionLevel Optimal -Force
     Copy-Item -LiteralPath (Join-Path $stage 'embroidery-lab.exe') -Destination (Join-Path $OutputDirectory "$archiveBase.exe")
     Copy-Item -LiteralPath (Join-Path $stage 'embroidery-cli.exe') -Destination (Join-Path $OutputDirectory "embroidery-cli-$Version-windows-x64.exe")
-    $assets = @($archive, (Join-Path $OutputDirectory "$archiveBase.exe"), (Join-Path $OutputDirectory "embroidery-cli-$Version-windows-x64.exe"))
+    Copy-Item -LiteralPath (Join-Path $stage 'pdfium.dll') -Destination (Join-Path $OutputDirectory 'pdfium.dll')
+    $loosePdfiumLicenses = Join-Path $OutputDirectory 'pdfium-licenses'
+    New-Item -ItemType Directory -Force -Path $loosePdfiumLicenses | Out-Null
+    Copy-Item -LiteralPath (Join-Path $pdfium.LicenseDirectory 'LICENSE') -Destination (Join-Path $loosePdfiumLicenses 'LICENSE')
+    Copy-Item -LiteralPath (Join-Path $pdfium.LicenseDirectory 'licenses') -Destination $loosePdfiumLicenses -Recurse -Force
+    $pdfiumLegalArchive = Join-Path $OutputDirectory 'pdfium-licenses.zip'
+    Compress-Archive -LiteralPath $loosePdfiumLicenses -DestinationPath $pdfiumLegalArchive -CompressionLevel Optimal -Force
+    $assets = @($archive, (Join-Path $OutputDirectory "$archiveBase.exe"), (Join-Path $OutputDirectory "embroidery-cli-$Version-windows-x64.exe"), (Join-Path $OutputDirectory 'pdfium.dll'), $pdfiumLegalArchive)
     $checksums = foreach ($asset in $assets | Sort-Object) { "{0}  {1}" -f (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant(), [IO.Path]::GetFileName($asset) }
     $checksums | Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding ascii
     foreach ($asset in $assets) { [pscustomobject]@{file=$asset; bytes=(Get-Item -LiteralPath $asset).Length; sha256=(Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()} }

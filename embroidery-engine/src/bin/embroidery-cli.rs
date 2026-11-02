@@ -81,7 +81,7 @@ fn output(project: &Project, path: &Path) -> Result<(), String> {
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let usage = "Usage: embroidery-cli demo OUTPUT.dst | satin-demo OUTPUT.dst | satin-outline INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER WIDTH_MM [closed] | satin-from-branch INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER BRANCH_NUMBER | quality INPUT.(elab|dst|dsb) OUTPUT.json | generate INPUT.(jpg|png|svg|elab) OUTPUT.(dst|dsb) [width_mm] | generate-with-options INPUT.(jpg|png) OUTPUT.(dst|dsb) WIDTH_MM OPTIONS.json | centerlines INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER [PIXEL_MM] | project INPUT OUTPUT.elab [width_mm] | inspect INPUT.dst | roundtrip INPUT.dst OUTPUT.dst | render INPUT.dst OUTPUT.svg | dsb-roundtrip INPUT.dsb OUTPUT.dsb | dsb-records INPUT.dsb OUTPUT.json | dsb-from-dst INPUT.dst OUTPUT.dsb";
+    let usage = "Usage: embroidery-cli demo OUTPUT.dst | satin-demo OUTPUT.dst | satin-outline INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER WIDTH_MM [closed] | satin-from-branch INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER BRANCH_NUMBER | quality INPUT.(elab|dst|dsb) OUTPUT.json | generate INPUT.(jpg|jpeg|png|pdf|svg|elab) OUTPUT.(dst|dsb) [width_mm] | generate-with-options INPUT.(jpg|png) OUTPUT.(dst|dsb) WIDTH_MM OPTIONS.json | centerlines INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER [PIXEL_MM] | project INPUT OUTPUT.elab [width_mm] | inspect INPUT.dst | roundtrip INPUT.dst OUTPUT.dst | render INPUT.dst OUTPUT.svg | dsb-roundtrip INPUT.dsb OUTPUT.dsb | dsb-records INPUT.dsb OUTPUT.json | dsb-from-dst INPUT.dst OUTPUT.dsb";
     let command = args.first().ok_or(usage)?;
     let input = || {
         args.get(1)

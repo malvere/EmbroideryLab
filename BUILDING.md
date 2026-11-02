@@ -10,7 +10,13 @@
 
 ## Проверки
 
-Из корня репозитория:
+Из корня репозитория подготовьте закреплённый компонент PDFium для Windows x64. Скрипт проверяет SHA-256 архива и DLL, копирует DLL и лицензии рядом с отладочной и релизной сборками. Первая подготовка требует доступа к сети; повторная использует проверенную локальную копию.
+
+```powershell
+.\tools\setup-pdfium.ps1
+```
+
+Затем выполните проверки:
 
 ```powershell
 cargo fmt --manifest-path embroidery-engine/Cargo.toml --check
@@ -26,7 +32,14 @@ cargo clippy --manifest-path embroidery-engine/Cargo.toml --all-targets --featur
 cargo build --manifest-path embroidery-engine/Cargo.toml --release --bins
 ```
 
-Результат для Windows: `embroidery-engine/target/release/embroidery-lab.exe` и `embroidery-cli.exe`. При GNU-сборке runtime DLL компилятора могут потребоваться рядом с EXE; архив выпуска должен включать их и лицензии. На другом компьютере проверяйте распакованный архив целиком.
+Результат для Windows: `embroidery-engine/target/release/embroidery-lab.exe` и `embroidery-cli.exe`. Для импорта PDF рядом с EXE нужен подготовленный `pdfium.dll` и его лицензии. При GNU-сборке также могут потребоваться runtime DLL компилятора; помощник упаковки проверяет и включает такие зависимости. На другом компьютере используйте распакованный архив целиком. Для 3D-просмотра требуется OpenGL 3.3 или новее.
+
+Windows-помощники выполняют подготовку PDFium автоматически:
+
+```powershell
+.\tools\build.ps1 -Release
+.\tools\run.ps1 -Release
+```
 
 Для запуска отладочной версии:
 
@@ -34,7 +47,7 @@ cargo build --manifest-path embroidery-engine/Cargo.toml --release --bins
 cargo run --manifest-path embroidery-engine/Cargo.toml --bin embroidery-lab
 ```
 
-Без интерфейса:
+Без интерфейса (импорт PDF по-прежнему требует PDFium):
 
 ```powershell
 cargo test --manifest-path embroidery-engine/Cargo.toml --no-default-features
@@ -54,10 +67,10 @@ python tools/quality_v05.py --cli embroidery-engine/target/release/embroidery-cl
 
 ## Упаковка Windows GNU
 
-`tools/package-release.ps1` собирает GUI и CLI, проверяет импорты PE, добавляет лицензии зависимостей и формирует ZIP, отдельные EXE и SHA256SUMS. Для этого помощника нужны Windows GNU Rust toolchain, MinGW GCC и `objdump` либо LLVM `llvm-readobj` в PATH. Прямая сборка MSVC через Cargo остаётся отдельным вариантом.
+`tools/package-release.ps1` собирает GUI и CLI, проверяет импорты PE, включает закреплённый PDFium с лицензиями и формирует ZIP, отдельные EXE, `pdfium.dll`, сведения о сборке и SHA256SUMS. Для этого помощника нужны Windows GNU Rust toolchain, MinGW GCC и `objdump` либо LLVM `llvm-readobj` в PATH. Прямая сборка MSVC через Cargo остаётся отдельным вариантом.
 
 ```powershell
-.\tools\package-release.ps1 -Version 0.5.0 -SourceCommit (git rev-parse HEAD)
+.\tools\package-release.ps1 -Version 0.6.0 -SourceCommit (git rev-parse HEAD)
 ```
 
-Помощник не включает пользовательские образцы и результаты локальной оцифровки в архив. Проверенный выпуск 0.5.0 не требует дополнительных runtime DLL; ZIP дополнительно содержит документацию и лицензии.
+Помощник не включает пользовательские образцы и результаты локальной оцифровки в архив. Для переноса выпуска 0.6.0 используйте полный ZIP. Отдельный EXE без `pdfium.dll` не поддерживает импорт PDF; остальные форматы не требуют этого компонента. При распространении отдельных файлов сохраняйте лицензии PDFium и других зависимостей из архива.

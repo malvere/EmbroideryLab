@@ -6,7 +6,9 @@ use std::{collections::BTreeMap, path::Path};
 
 #[path = "raster_options.rs"]
 mod raster_options;
-pub use raster_options::{BackgroundMode, RasterOptions, load_image_with_options};
+pub use raster_options::{
+    BackgroundMode, RasterOptions, load_image_with_options, load_pixels_with_options,
+};
 
 fn name(path: &Path) -> String {
     path.file_stem()
@@ -435,7 +437,11 @@ pub fn load(path: &Path, width_mm: f64) -> Result<Project, String> {
         "svg" => load_svg(path, width_mm),
         "json" | "elab" => Project::load(path),
         "png" | "jpg" | "jpeg" => load_image(path, width_mm),
-        _ => Err("Supported editable inputs: JPG, PNG, SVG, ELAB/JSON".into()),
+        "pdf" => {
+            let page = crate::pdf_import::render_page(path, 0, 2048)?;
+            load_pixels_with_options(&page.image, path, width_mm, &RasterOptions::default())
+        }
+        _ => Err("Supported editable inputs: JPEG, PNG, PDF, SVG, ELAB/JSON".into()),
     }
 }
 

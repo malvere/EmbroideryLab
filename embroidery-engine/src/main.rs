@@ -1,7 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod artwork_import;
+mod context_hit;
+mod context_menu;
 mod editor_tools;
 mod i18n;
+mod layer_selection;
+#[cfg(test)]
+#[path = "layer_selection_ui_tests.rs"]
+mod layer_selection_ui_tests;
+mod marquee;
+mod marquee_hit;
+mod stitch_3d;
+mod stitch_metrics;
+mod stitch_view;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use embroidery_lab::{centerline_workflow, dsb, dst, engine, import, model::*};
@@ -55,6 +67,7 @@ struct ImportPreview {
     path: PathBuf,
     texture: egui::TextureHandle,
     pixels: image::RgbaImage,
+    pdf: Option<artwork_import::PdfPreview>,
 }
 
 struct CenterlineJob {
@@ -70,6 +83,10 @@ struct Editor {
     stitches: Vec<Stitch>,
     dsb_records: Option<Vec<dsb::DsbRecord>>,
     selected: usize,
+    selection_anchor: Option<u64>,
+    layer_focus_id: Option<egui::Id>,
+    context_popup: Option<(egui::Id, Pos2)>,
+    marquee: marquee::Marquee,
     tool: Tool,
     draft: Vec<Point>,
     handle: Option<Handle>,
@@ -112,6 +129,12 @@ struct Editor {
     show_jumps: bool,
     show_nodes: bool,
     show_image: bool,
+    show_3d: bool,
+    preview_3d: stitch_3d::Preview3d,
+    stitch_revision: u64,
+    stitch_bounds: Option<stitch_metrics::StitchBounds>,
+    stitch_count: usize,
+    jump_count: usize,
     image: Option<(egui::TextureHandle, f64, f64)>,
     progress: usize,
     playing: bool,
@@ -127,6 +150,7 @@ struct Editor {
     import_preview: Option<ImportPreview>,
     centerline_pixel_mm: f64,
     centerline_job: Option<CenterlineJob>,
+    pdf_job: Option<artwork_import::PdfJob>,
 }
 
 impl Editor {
@@ -143,6 +167,9 @@ impl Editor {
             .and_then(|code| Language::from_code(&code))
             .unwrap_or_else(Language::load);
         let mut app = Self::workspace_with_language(language);
+        app.preview_3d = stitch_3d::Preview3d::new(cc.gl.clone());
+        app.preview_3d
+            .set_stitches(&app.stitches, app.stitch_revision);
         if let Some(path) = std::env::args_os().nth(1) {
             app.request_open(PathBuf::from(path), &cc.egui_ctx);
         } else if app.capture_path.is_none() {
@@ -167,6 +194,10 @@ impl Editor {
             stitches: vec![],
             dsb_records: None,
             selected: 0,
+            selection_anchor: None,
+            layer_focus_id: None,
+            context_popup: None,
+            marquee: marquee::Marquee::default(),
             tool: Tool::Nodes,
             draft: vec![],
             handle: None,
@@ -209,6 +240,12 @@ impl Editor {
             show_jumps: false,
             show_nodes: true,
             show_image: true,
+            show_3d: false,
+            preview_3d: stitch_3d::Preview3d::default(),
+            stitch_revision: 0,
+            stitch_bounds: None,
+            stitch_count: 0,
+            jump_count: 0,
             image: None,
             progress: 0,
             playing: false,
@@ -232,6 +269,7 @@ impl Editor {
             import_preview: None,
             centerline_pixel_mm: 0.2,
             centerline_job: None,
+            pdf_job: None,
         };
         app.generate();
         app
@@ -240,6 +278,9 @@ impl Editor {
         if ctx.input(|i| i.viewport().close_requested()) {
             self.import_preview = None;
             if let Some(job) = &mut self.centerline_job {
+                job.cancelled = true;
+            }
+            if let Some(job) = &mut self.pdf_job {
                 job.cancelled = true;
             }
         }
@@ -314,7 +355,10 @@ impl Editor {
         self.push_history(self.project.clone());
     }
     fn create_centerlines(&mut self) {
-        if self.stitch_only || self.centerline_job.is_some() {
+        if self.stitch_only
+            || self.centerline_job.is_some()
+            || self.selected >= self.project.objects.len()
+        {
             return;
         }
         let project = self.project.clone();
@@ -411,6 +455,7 @@ impl Editor {
                 self.quality_issues =
                     embroidery_lab::quality::analyze(&stitches, Default::default());
                 self.stitches = stitches;
+                self.update_stitch_view();
                 self.progress = self.stitches.len();
                 self.stale = false;
                 self.result(Ok(format!(
@@ -426,7 +471,13 @@ impl Editor {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 language.text("Artwork / project / DST / DSB"),
-                &["jpg", "jpeg", "png", "svg", "elab", "json", "dst", "dsb"],
+                &[
+                    "jpg", "jpeg", "png", "pdf", "svg", "elab", "json", "dst", "dsb",
+                ],
+            )
+            .add_filter(
+                language.text("Images (JPEG, PNG, PDF, SVG)"),
+                &["jpg", "jpeg", "png", "pdf", "svg"],
             )
             .pick_file()
         {
@@ -438,11 +489,16 @@ impl Editor {
         }
     }
     fn request_open(&mut self, path: PathBuf, ctx: &egui::Context) {
+        self.context_popup = None;
         let ext = path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+        if ext == "pdf" {
+            self.start_pdf_load(path, 0, ctx);
+            return;
+        }
         if !["png", "jpg", "jpeg"].contains(&ext.as_str()) {
             self.open(path, ctx);
             return;
@@ -469,6 +525,7 @@ impl Editor {
                 self.import_preview = Some(ImportPreview {
                     path,
                     pixels,
+                    pdf: None,
                     texture: ctx.load_texture("import preview", data, egui::TextureOptions::LINEAR),
                 });
                 self.error = false;
@@ -506,12 +563,16 @@ impl Editor {
                         .to_string_lossy()
                         .into();
                     self.stitches = s;
+                    self.update_stitch_view();
+                    self.preview_3d.reset_view();
                     self.quality_issues =
                         embroidery_lab::quality::analyze(&self.stitches, Default::default());
                     self.dsb_records = records;
                     self.progress = self.stitches.len();
                     self.image = None;
                     self.stitch_only = true;
+                    self.selection_anchor = None;
+                    self.merge_selection.clear();
                     self.tool = Tool::Nodes;
                     self.draft.clear();
                     self.selected_node = None;
@@ -535,13 +596,20 @@ impl Editor {
         }
         let loaded = if ext == "elab" || ext == "json" {
             Project::load(&path)
+        } else if ext == "pdf"
+            && self
+                .import_preview
+                .as_ref()
+                .is_some_and(|p| p.path == path && p.pdf.is_some())
+        {
+            self.trace_import_preview()
         } else if ["png", "jpg", "jpeg"].contains(&ext.as_str()) {
             import::load_image_with_options(&path, self.import_width_mm, &self.raster_options)
         } else {
             import::load(&path, self.import_width_mm)
         };
         let loaded = loaded.and_then(|p| {
-            if ["png", "jpg", "jpeg"].contains(&ext.as_str())
+            if ["png", "jpg", "jpeg", "pdf"].contains(&ext.as_str())
                 && let Some(preview) = &self.region_preview
             {
                 preview.apply_overrides_to(p).map(|preview| preview.project)
@@ -554,7 +622,7 @@ impl Editor {
                 if self.dirty {
                     let _ = embroidery_lab::persistence::clear_recovery(self.path.as_deref());
                 }
-                if ["png", "jpg", "jpeg"].contains(&ext.as_str()) {
+                if ["png", "jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
                     for object in &mut p.objects {
                         object.name = self.language.message(&object.name).into_owned();
                     }
@@ -581,12 +649,14 @@ impl Editor {
                 self.undo.clear();
                 self.redo.clear();
                 self.merge_selection.clear();
+                self.selection_anchor = None;
                 self.field_before = None;
                 self.clear_selection();
                 self.cancel_draft();
                 self.dirty = self.path.is_none();
                 self.last_autosave = Instant::now();
-                if self.capture_path.is_none() {
+                self.recovery = None;
+                if self.capture_path.is_none() && self.path.is_some() {
                     match embroidery_lab::persistence::load_recovery(self.path.as_deref()) {
                         Ok(copy) => self.recovery = copy,
                         Err(e) => self.result(Err(e)),
@@ -594,6 +664,7 @@ impl Editor {
                 }
                 self.fit = true;
                 self.generate();
+                self.preview_3d.reset_view();
                 true
             }
             Err(e) => {
@@ -852,11 +923,35 @@ impl Editor {
             return;
         }
         let mut action = 0_u8;
+        let mut pdf_page = None;
+        let header_height = if self
+            .import_preview
+            .as_ref()
+            .is_some_and(|preview| preview.pdf.is_some())
+        {
+            300.
+        } else {
+            220.
+        };
         egui::Modal::new(egui::Id::new("trace-artwork")).show(ctx, |ui| {
                 ui.set_width(760.);
                 ui.heading(language.text("Trace artwork"));
+                if let Some(preview) = &self.import_preview {
+                    ui.label(preview.path.file_name().unwrap_or_default().to_string_lossy());
+                    if let Some(pdf) = &preview.pdf {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(language.text("PDF page"));
+                            let mut number = pdf.page_index + 1;
+                            if ui.add(egui::DragValue::new(&mut number).range(1..=pdf.page_count).speed(1)).changed() {pdf_page=Some(number-1);}
+                            ui.label(format!("/ {}", pdf.page_count));
+                            if ui.add_enabled(pdf.page_index > 0, egui::Button::new(language.text("Previous page"))).clicked() {pdf_page=Some(pdf.page_index-1);}
+                            if ui.add_enabled(pdf.page_index+1 < pdf.page_count, egui::Button::new(language.text("Next page"))).clicked() {pdf_page=Some(pdf.page_index+1);}
+                        });
+                        ui.small(language.text("Import one page as an image. Choose its background and tracing settings below."));
+                    }
+                }
                 ui.label(language.text("Choose what becomes thread. Click to exclude a background color; Shift-click adds another."));
-                egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-180.).max(240.)).show(ui,|ui| {
+                egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-header_height).max(160.)).show(ui,|ui| {
                 ui.horizontal_top(|ui| {
                     let preview = self.import_preview.as_ref().unwrap();
                     let texture=self.mask_texture.as_ref().unwrap_or(&preview.texture);
@@ -950,7 +1045,11 @@ impl Editor {
                     if ui.button(language.text("Cancel")).clicked() {action=2;}
                 });
             });
-        if action == 1 {
+        if let Some(page) = pdf_page {
+            if let Some(preview) = &self.import_preview {
+                self.start_pdf_load(preview.path.clone(), page, ctx);
+            }
+        } else if action == 1 {
             self.commit_import(ctx);
         } else if action == 2 {
             self.cancel_import();
@@ -975,6 +1074,7 @@ impl Editor {
     }
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if self.import_preview.is_some()
+            || self.pdf_job.as_ref().is_some_and(|job| !job.cancelled)
             || self.recovery.is_some()
             || self.confirm_close
             || self.discard.is_some()
@@ -1004,6 +1104,23 @@ impl Editor {
         {
             self.redo_edit();
         }
+        let layer_list_focused = self
+            .layer_focus_id
+            .is_some_and(|id| ctx.memory(|memory| memory.has_focus(id)));
+        if (!ctx.wants_keyboard_input() || layer_list_focused)
+            && !self.stitch_only
+            && self.tool == Tool::Nodes
+            && self.draft.is_empty()
+            && self.satin_first.is_empty()
+            && self.rung_start.is_none()
+            && self.outline_preview.is_none()
+            && self.smoothing_preview.is_none()
+            && self.context_popup.is_none()
+            && !egui::Popup::is_any_open(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::A))
+        {
+            self.select_all_layers();
+        }
         if !ctx.wants_keyboard_input() {
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.tool == Tool::Polygon {
                 self.complete_polygon();
@@ -1032,11 +1149,20 @@ impl Editor {
             .width_range(180. ..=340.)
             .show(ctx, |ui| {
                 ui.heading(language.text("Objects"));
-                ui.label(language.text("Sewing order · top to bottom"));
+                ui.label(language.text("Sewing order · top to bottom")).on_hover_text(language.text(
+                    "Click: one layer · Shift-click: range · Ctrl-click: toggle · Ctrl+A: all layers",
+                ));
+                if !self.merge_selection.is_empty() {
+                    ui.label(
+                        language
+                            .message(&format!("Selected areas: {}", self.merge_selection.len())),
+                    );
+                }
                 ui.separator();
                 let mut changed = false;
                 let before_visibility = self.project.clone();
                 let mut target = None;
+                let mut context_responses = Vec::new();
                 egui::ScrollArea::vertical()
                     .max_height((ui.available_height() - 205.).max(80.))
                     .show(ui, |ui| {
@@ -1055,26 +1181,31 @@ impl Editor {
                                     2.,
                                     Color32::from_rgb(o.color[0], o.color[1], o.color[2]),
                                 );
-                                if ui.selectable_label(i == self.selected, &o.name).clicked() {
-                                    if ui.input(|input| input.modifiers.ctrl) {
-                                        if self.merge_selection.contains(&o.id) {
-                                            self.merge_selection.retain(|id| *id != o.id);
-                                        } else {
-                                            self.merge_selection.push(o.id);
-                                        }
-                                    }
-                                    target = Some(i);
+                                let row = ui.selectable_label(
+                                    i == self.selected || self.merge_selection.contains(&o.id),
+                                    &o.name,
+                                );
+                                if row.has_focus() || row.clicked() {
+                                    self.layer_focus_id = Some(row.id);
                                 }
+                                if row.clicked() {
+                                    target = Some((i, ui.input(|input| input.modifiers)));
+                                }
+                                context_responses.push((i, row));
                                 if self.merge_selection.contains(&o.id) {
                                     ui.small(language.text("Selected"));
                                 }
                             });
                         }
                     });
-                if let Some(i) = target {
-                    self.selected = i;
-                    self.clear_selection();
-                    self.outline_preview = None;
+                if let Some((i, modifiers)) = target {
+                    self.select_layer(i, modifiers);
+                }
+                for (i, response) in context_responses {
+                    if response.secondary_clicked() {
+                        self.select_object(i);
+                    }
+                    self.object_context_menu(&response);
                 }
                 if changed {
                     self.finish_field_edit();
@@ -1090,10 +1221,7 @@ impl Editor {
                         )
                         .clicked()
                     {
-                        self.snapshot();
-                        self.project.objects.swap(self.selected, self.selected - 1);
-                        self.selected -= 1;
-                        self.changed();
+                        self.move_selected(false);
                     }
                     if ui
                         .add_enabled(
@@ -1102,10 +1230,7 @@ impl Editor {
                         )
                         .clicked()
                     {
-                        self.snapshot();
-                        self.project.objects.swap(self.selected, self.selected + 1);
-                        self.selected += 1;
-                        self.changed();
+                        self.move_selected(true);
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
@@ -1156,18 +1281,12 @@ impl Editor {
                 }
                 if ui
                     .add_enabled(
-                        !self.project.objects.is_empty(),
+                        !self.stitch_only && self.selected < self.project.objects.len(),
                         egui::Button::new(language.text("Remove object")),
                     )
                     .clicked()
                 {
-                    self.snapshot();
-                    self.project
-                        .objects
-                        .remove(self.selected.min(self.project.objects.len() - 1));
-                    self.selected = self.selected.saturating_sub(1);
-                    self.selected_node = None;
-                    self.changed();
+                    self.remove_selected();
                 }
             });
         egui::SidePanel::right("parameters").default_width(265.).width_range(240. ..=380.).show(ctx,|ui|{
@@ -1183,49 +1302,7 @@ impl Editor {
                         ui.small(language.text("Pixel size controls detail. Review branches before export; Satin width is not inferred."));
                     });
                 }
-                let before=self.project.clone();let mut changed=false;
-                if let Some(o)=self.project.objects.get_mut(self.selected) {
-                    changed|=ui.text_edit_singleline(&mut o.name).changed();
-                    ui.horizontal(|ui|{ui.label(language.text("Thread"));changed|=ui.color_edit_button_srgb(&mut o.color).changed();});
-                    ui.separator();
-                    let open_paths = !o.running_paths.is_empty();
-                    ui.add_enabled_ui(!open_paths, |ui| {egui::ComboBox::from_label(language.text("Type")).selected_text(stitch_kind_label(language,o.settings.kind)).show_ui(ui,|ui|{
-                        for k in [StitchKind::Running,StitchKind::Satin,StitchKind::Tatami]{changed|=ui.selectable_value(&mut o.settings.kind,k,stitch_kind_label(language,k)).changed();}
-                    });});
-                    if open_paths {ui.small(language.text("Running paths. Branches are sewn separately; closed loops stay closed."));}
-                    let rail_satin = o.satin_column.is_some() && o.settings.kind == StitchKind::Satin;
-                    if !open_paths {
-                    ui.label(if rail_satin {language.text("Rail puncture spacing (mm)")}else{language.text("Row spacing (mm)")});changed|=ui.add(egui::DragValue::new(&mut o.settings.spacing_mm).speed(0.01).range(0.15..=5.).fixed_decimals(2)).changed();
-                    ui.small(format!("{:.2} {} / {}",1./o.settings.spacing_mm,if rail_satin {language.text("rail punctures")}else{language.text("rows")},language.text("mm")));
-                    }
-                    ui.label(language.text("Max stitch length (mm)"));changed|=ui.add(egui::DragValue::new(&mut o.settings.length_mm).speed(0.1).range(0.5..=12.).fixed_decimals(1)).changed();
-                    if rail_satin {ui.small(language.text("Direction follows the two rails. Drag rail nodes to shape the column."));}
-                    else if !open_paths {
-                        ui.label(language.text("Angle (degrees)"));changed|=ui.add(egui::Slider::new(&mut o.settings.angle_deg,0. ..=180.)).changed();
-                        changed|=ui.checkbox(&mut o.settings.auto_angle,language.text("Automatic direction")).changed();
-                    }
-                    ui.separator();if !open_paths {changed|=ui.checkbox(&mut o.settings.underlay,if rail_satin {language.text("Centerwalk underlay")}else{language.text("Sparse underlay")}).changed();
-                    ui.label(language.text("Pull compensation (mm)"));changed|=ui.add(egui::DragValue::new(&mut o.settings.pull_comp_mm).speed(0.01).range(0. ..=1.).fixed_decimals(2)).changed();
-                    }
-                    changed|=ui.checkbox(&mut o.settings.tie_in,language.text("Tie-in")).changed();changed|=ui.checkbox(&mut o.settings.tie_off,language.text("Tie-off")).changed();
-                    ui.separator();ui.label(if open_paths {language.text("Running path direction")}else if rail_satin{language.text("Satin direction")}else{language.text("Start / end contour")});
-                    if !open_paths && !rail_satin && ui.button(language.text("Move start to selected node")).clicked()&& let Some((r,n))=self.selected_node&& let Some(ring)=o.contours.get_mut(r){ring.rotate_left(n);self.selected_node=Some((r,0));changed=true;}
-                    if ui.button(language.text("Reverse direction")).clicked(){for ring in &mut o.contours{ring.reverse();}if let Some(graph)=&mut o.centerline_graph{for branch in &mut graph.branches{branch.points.reverse();std::mem::swap(&mut branch.start_vertex,&mut branch.end_vertex);}embroidery_lab::axis_edit::sync_paths(o);}else{for path in &mut o.running_paths{path.reverse();}}
-                    if let Some(column)=&mut o.satin_column{let _=embroidery_lab::satin_edit::reverse(column);}changed=true;self.selected_node=None;self.selected_rail=None;self.selected_path=None;}
-                    if let Some((r,n))=self.selected_node&& let Some(p)=o.contours.get_mut(r).and_then(|ring|ring.get_mut(n)){ui.label(language.text("Selected node (mm)"));ui.horizontal(|ui|{changed|=ui.add(egui::DragValue::new(&mut p.x).prefix("X ").speed(0.1)).changed();changed|=ui.add(egui::DragValue::new(&mut p.y).prefix("Y ").speed(0.1)).changed();});}
-                    ui.small(if open_paths {language.text("Drag path nodes on the canvas. Changes remain editable in ELAB.")}else if rail_satin{language.text("Drag rail nodes or handles. Double-click a rail to insert a node; Delete removes the selected node.")}else{language.text("Drag square nodes or Bezier handles on the canvas. Delete removes a selected polygon node.")});
-                    if let Some((r,n))=self.selected_path && let Some(path)=o.running_paths.get(r) && let Some(point)=path.get(n) {
-                        let mut point=*point;
-                        ui.label(language.text("Selected path node (mm)"));let mut edited=false;
-                        ui.horizontal(|ui|{edited|=ui.add(egui::DragValue::new(&mut point.x).prefix("X ").speed(0.1)).changed();edited|=ui.add(egui::DragValue::new(&mut point.y).prefix("Y ").speed(0.1)).changed();});
-                        if edited {match set_path_node(o,r,n,point){Ok(())=>changed=true,Err(e)=>{self.message=e;self.error=true;}}}
-                    }
-                    if let Some((right,n))=self.selected_rail&&let Some(column)=&mut o.satin_column {
-                        let rail=if right{&column.right}else{&column.left};
-                        if let Some(point)=rail.get(n){let mut point=*point;let mut edited=false;ui.label(language.text("Selected rail node (mm)"));ui.horizontal(|ui|{edited|=ui.add(egui::DragValue::new(&mut point.x).prefix("X ").speed(0.1)).changed();edited|=ui.add(egui::DragValue::new(&mut point.y).prefix("Y ").speed(0.1)).changed();});if edited{match embroidery_lab::satin_edit::set_node(column,right,n,point){Ok(())=>{changed=true;self.project.version=4;},Err(e)=>{self.message=e;self.error=true;}}}}
-                    }
-                }else{ui.label(language.text("Select or create an object."));}
-                if changed {self.record_field_edit(before);}
+                self.object_parameters(ui);
                 self.geometry_tools(ui);
                 ui.separator();ui.heading(language.text("Artwork"));ui.label(language.text("Next import width (mm)"));ui.add(egui::DragValue::new(&mut self.import_width_mm).speed(1.).range(5. ..=400.));
                 ui.small(language.text("Open a raster to choose its background, palette and tracing resolution. DST preview colors are illustrative."));
@@ -1292,6 +1369,13 @@ impl Editor {
                 ((q.y - center.y) / scale) as f64,
             )
         };
+        let selecting_areas = self.update_marquee(ui, &response, center, scale);
+        if response.secondary_clicked()
+            && !selecting_areas
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.select_context_at(world(pos));
+        }
         let step = 10. * scale;
         if step >= 12. {
             let x0 = rect.left() + ((center.x - rect.left()) % step + step) % step;
@@ -1414,6 +1498,7 @@ impl Editor {
                 );
             }
         }
+        self.paint_selected_areas(&p, center, scale);
         let mut handles = vec![];
         if self.show_nodes
             && self.tool == Tool::Nodes
@@ -1831,6 +1916,9 @@ impl Editor {
                 }
             }
         }
+        if !selecting_areas {
+            self.object_context_menu(&response);
+        }
         for win in self.draft.windows(2) {
             p.line_segment(
                 [screen(win[0]), screen(win[1])],
@@ -1856,6 +1944,21 @@ impl Editor {
             egui::FontId::proportional(12.),
             Color32::from_rgb(70, 80, 95),
         );
+        let selection_hint = p.layout_no_wrap(
+            language
+                .text("Right-click: menu · Right drag: select areas\nCtrl/Shift: add to selection")
+                .to_owned(),
+            egui::FontId::proportional(12.),
+            Color32::from_rgb(70, 80, 95),
+        );
+        let hint_position = rect.left_bottom() + Vec2::new(14., -50. - selection_hint.size().y);
+        p.rect_filled(
+            Rect::from_min_size(hint_position, selection_hint.size()).expand(4.),
+            0.,
+            Color32::from_rgb(248, 249, 251),
+        );
+        p.galley(hint_position, selection_hint, Color32::from_rgb(70, 80, 95));
+        self.paint_marquee(&p);
     }
 }
 
@@ -1867,6 +1970,7 @@ impl eframe::App for Editor {
         }
         self.guard_close(ctx);
         self.shortcuts(ctx);
+        self.dropped_artwork(ctx);
         let dt = self.clock.elapsed().as_secs_f64().min(0.2);
         self.clock = Instant::now();
         if self.playing && !self.stale {
@@ -1885,11 +1989,14 @@ impl eframe::App for Editor {
                 ui.separator();
                 if ui
                     .button(language.text("Open…"))
-                    .on_hover_text(language.text("Ctrl+O · JPG / PNG / SVG / project / DST / DSB"))
+                    .on_hover_text(language.text("Ctrl+O · JPEG / PNG / PDF / SVG / project / DST / DSB"))
                     .clicked()
                 {
                     self.open_dialog(ctx);
                 }
+                if ui.button(language.text("Import image…"))
+                    .on_hover_text(language.text("JPEG, PNG, PDF or SVG. You can also drop a file onto the editor."))
+                    .clicked() { self.image_dialog(ctx); }
                 if ui
                     .add_enabled(!self.stitch_only, egui::Button::new(language.text("Save project")))
                     .on_hover_text(language.text("Ctrl+S · Editable geometry projects"))
@@ -1930,6 +2037,10 @@ impl eframe::App for Editor {
                 ));
             });
             ui.horizontal_wrapped(|ui| {
+                if ui.selectable_label(!self.show_3d, "2D").clicked() { self.set_3d_view(false); }
+                if ui.selectable_label(self.show_3d, "3D").on_hover_text(language.text("3D stitch preview")).clicked() { self.set_3d_view(true); }
+                ui.separator();
+                if !self.show_3d {
                 if ui.selectable_label(self.tool==Tool::Nodes,language.text("Edit nodes")).clicked(){self.cancel_draft();}
                 ui.add_enabled_ui(!self.stitch_only, |ui| {
                     if ui.selectable_label(self.tool==Tool::Polygon,language.text("Draw contour")).clicked(){self.cancel_draft();self.tool=Tool::Polygon;}
@@ -1947,8 +2058,13 @@ impl eframe::App for Editor {
                 ui.checkbox(&mut self.show_stitches, language.text("Stitches"));
                 ui.checkbox(&mut self.show_jumps, language.text("Jumps"));
                 ui.checkbox(&mut self.show_image, language.text("Source"));
+                } else {
+                    ui.label(language.text("Thread diameter (mm)"));
+                    ui.add(egui::DragValue::new(&mut self.preview_3d.thread_diameter_mm).range(0.08..=0.8).speed(0.01).fixed_decimals(2));
+                    ui.checkbox(&mut self.show_jumps, language.text("Jumps"));
+                }
                 if ui.button(language.text("Fit design")).clicked() {
-                    self.fit = true;
+                    if self.show_3d { self.preview_3d.reset_view(); } else { self.fit = true; }
                 }
                 ui.separator();
                 ui.label(language.text("Language"));
@@ -1998,13 +2114,9 @@ impl eframe::App for Editor {
                         .range(10. ..=20000.)
                         .suffix(language.text(" / s")),
                 );
-                let (count, jumps) = self.stitches.iter().fold((0, 0), |(count, jumps), s| {
-                    (
-                        count + usize::from(s.command == Command::Stitch),
-                        jumps + usize::from(s.command == Command::Jump),
-                    )
-                });
-                ui.label(language.message(&format!("{count} needle stitches · {jumps} jumps")));
+                ui.label(self.stitch_summary_text()).on_hover_text(
+                    language.text("Width × height of sewn stitches. Travel jumps are excluded."),
+                );
                 if self.stale {
                     ui.colored_label(
                         Color32::from_rgb(161, 43, 50),
@@ -2022,7 +2134,16 @@ impl eframe::App for Editor {
             );
         });
         self.sidebars(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| self.canvas(ui));
+        if self.show_3d && self.tool != Tool::Nodes {
+            self.show_3d = false;
+        }
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.show_3d {
+                self.three_d_canvas(ui);
+            } else {
+                self.canvas(ui);
+            }
+        });
         if self.confirm_close {
             egui::Window::new(language.text("Save before closing?"))
                 .collapsible(false)
@@ -2076,6 +2197,7 @@ impl eframe::App for Editor {
                 });
         }
         self.import_window(ctx);
+        self.pdf_progress(ctx);
         self.centerline_progress(ctx);
         if self.field_before.is_some()
             && ctx.input(|i| i.pointer.any_released() || i.key_pressed(egui::Key::Enter))
@@ -2084,6 +2206,10 @@ impl eframe::App for Editor {
         }
         self.recovery_and_autosave(ctx);
         self.capture_frame(ctx);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.preview_3d.destroy();
     }
 }
 

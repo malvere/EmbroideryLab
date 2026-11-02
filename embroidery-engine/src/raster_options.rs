@@ -508,14 +508,7 @@ pub fn load_image_with_options(
             .map_err(|e| e.to_string())
     };
     let (source_width, source_height) = reader()?.into_dimensions().map_err(|e| e.to_string())?;
-    if source_width == 0
-        || source_height == 0
-        || source_width > 16384
-        || source_height > 16384
-        || u64::from(source_width) * u64::from(source_height) > 32_000_000
-    {
-        return Err("Raster dimensions exceed 16384px per axis or 32 million source pixels".into());
-    }
+    validate_dimensions(source_width, source_height)?;
     let mut decoder = reader()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16384);
@@ -523,6 +516,65 @@ pub fn load_image_with_options(
     limits.max_alloc = Some(256_000_000);
     decoder.limits(limits);
     let decoded = decoder.decode().map_err(|e| e.to_string())?;
+    trace_pixels_with_source(&decoded, path, width_mm, options, || {
+        crate::persistence::SourceImage::from_path(path, width_mm).or_else(|_| {
+            crate::persistence::SourceImage::from_image(
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                &decoded,
+                width_mm,
+            )
+        })
+    })
+}
+
+/// Trace already-decoded artwork, such as one rendered PDF page. The source
+/// name labels the project and embedded PNG; this function never reads it.
+/// The encoded source is retained in ELAB, independently of the original file.
+pub fn load_pixels_with_options(
+    decoded: &image::DynamicImage,
+    source_name: &Path,
+    width_mm: f64,
+    options: &RasterOptions,
+) -> Result<Project, String> {
+    trace_pixels_with_source(decoded, source_name, width_mm, options, || {
+        crate::persistence::SourceImage::from_image(
+            source_name
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            decoded,
+            width_mm,
+        )
+    })
+}
+
+fn validate_dimensions(width: u32, height: u32) -> Result<(), String> {
+    if width == 0
+        || height == 0
+        || width > 16384
+        || height > 16384
+        || u64::from(width) * u64::from(height) > 32_000_000
+    {
+        Err("Raster dimensions exceed 16384px per axis or 32 million source pixels".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn trace_pixels_with_source(
+    decoded: &image::DynamicImage,
+    source_name: &Path,
+    width_mm: f64,
+    options: &RasterOptions,
+    source: impl FnOnce() -> Result<crate::persistence::SourceImage, String>,
+) -> Result<Project, String> {
+    super::validate_width(width_mm)?;
+    options.validate()?;
+    validate_dimensions(decoded.width(), decoded.height())?;
     let image =
         if decoded.width() > options.max_dimension || decoded.height() > options.max_dimension {
             decoded
@@ -636,21 +688,10 @@ pub fn load_image_with_options(
     objects.sort_by_key(|object| object.color);
     let project = Project {
         version: 4,
-        name: name(path),
+        name: name(source_name),
         objects,
         width_mm,
-        source_image: Some(
-            crate::persistence::SourceImage::from_path(path, width_mm).or_else(|_| {
-                crate::persistence::SourceImage::from_image(
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
-                    &decoded,
-                    width_mm,
-                )
-            })?,
-        ),
+        source_image: Some(source()?),
     };
     project.validate_limits()?;
     Ok(project)
