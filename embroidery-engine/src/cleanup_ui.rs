@@ -1061,6 +1061,18 @@ impl Editor {
                             language.text("Uncertain regions retained"), report.preparation_uncertain_regions,
                             language.text("Omitted regions"), report.omitted_region_count));
                         ui.small(format!("{}: {}", language.text("Residual regions retained"), report.preparation_preserved_residual_regions));
+                        ui.collapsing(language.text("Preparation decisions"), |ui| {
+                            ui.small(language.text("First reasons partition each pass; additional conditions overlap. Size bins: 1 / 2 / 3–4 / 5+ pixels."));
+                            for (index, pass) in report.preparation_diagnostics.passes.iter().enumerate() {
+                                ui.label(format!("RAG {}", index+1));
+                                for (reason,counts) in &pass.first_reasons { ui.monospace(format!("{reason}: {counts:?}")); }
+                            }
+                            if let Some(pass)=&report.preparation_diagnostics.context_pass {
+                                ui.label(language.text("Contextual sweep"));
+                                for (reason,counts) in &pass.first_reasons {ui.monospace(format!("{reason}: {counts:?}"));}
+                            }
+                            ui.small(format!("{}: {} px", language.text("Next RAG pass (diagnostic only)"), report.preparation_diagnostics.next_pass_changed_pixels));
+                        });
                     }
                     if let Some(uv) = region_click && let Some(regions) = &mut self.region_preview {
                         regions.toggle_at(Point::new(uv[0] as f64 * regions.project.width_mm,
@@ -1190,6 +1202,7 @@ impl Editor {
             PreparationMode::Gentle => "Gentle",
             PreparationMode::Standard => "Standard",
             PreparationMode::Small => "Small design",
+            PreparationMode::Contextual => "Contextual (experimental)",
         };
         let previous = self.raster_options.preparation;
         ui.horizontal_wrapped(|ui| {
@@ -1202,6 +1215,7 @@ impl Editor {
                         PreparationMode::Gentle,
                         PreparationMode::Standard,
                         PreparationMode::Small,
+                        PreparationMode::Contextual,
                     ] {
                         ui.selectable_value(
                             &mut self.raster_options.preparation,

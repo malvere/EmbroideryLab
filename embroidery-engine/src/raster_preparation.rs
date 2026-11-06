@@ -13,7 +13,10 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-pub const PREPARATION_VERSION: u32 = 2;
+#[path = "raster_preparation_context.rs"]
+mod context;
+
+pub const PREPARATION_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PreparationMode {
@@ -22,9 +25,14 @@ pub enum PreparationMode {
     Gentle,
     Standard,
     Small,
+    /// Standard phase 2 plus one bounded contextual sweep of flat microregions.
+    Contextual,
 }
 
 impl PreparationMode {
+    pub fn version(self) -> u32 {
+        if self == Self::Contextual { 3 } else { 2 }
+    }
     pub fn is_legacy(&self) -> bool {
         *self == Self::Legacy
     }
@@ -35,7 +43,7 @@ impl PreparationMode {
         match self {
             Self::Legacy => (0., 0., 0.),
             Self::Gentle => (0.35, 0.025, 0.025),
-            Self::Standard => (0.55, 0.035, 0.035),
+            Self::Standard | Self::Contextual => (0.55, 0.035, 0.035),
             Self::Small => (0.8, 0.045, 0.045),
         }
     }
@@ -46,6 +54,55 @@ pub(super) struct Prepared {
     pub after: usize,
     pub changed: usize,
     pub uncertain: usize,
+    pub diagnostics: PreparationDiagnostics,
+}
+
+/// Each pass is a separate population of four-connected components. First
+/// reasons partition that population; conditions overlap and MUST NOT be summed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PreparationDiagnostics {
+    pub passes: Vec<PreparationPass>,
+    pub next_pass_changed_pixels: usize,
+    pub comparison_work: u64,
+    pub limit_probe: Option<PreparationPass>,
+    pub limit_probe_comparison_work: u64,
+    pub context_pass: Option<PreparationPass>,
+    /// Diagnostic-only probes have a separate conservative work cap; they do
+    /// not consume or reset the historical label-changing comparison budget.
+    pub diagnostic_context_work_upper_bound: u64,
+    pub diagnostic_context_limit_reached: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PreparationPass {
+    pub first_reasons: BTreeMap<String, [usize; 4]>,
+    pub conditions: BTreeMap<String, [usize; 4]>,
+    pub first_reason_pixels: BTreeMap<String, [usize; 4]>,
+    pub condition_pixels: BTreeMap<String, [usize; 4]>,
+}
+
+impl PreparationPass {
+    fn add(&mut self, reason: &str, pixels: usize) {
+        let bin = size_bin(pixels);
+        self.first_reasons.entry(reason.into()).or_default()[bin] += 1;
+        self.first_reason_pixels.entry(reason.into()).or_default()[bin] += pixels;
+    }
+
+    fn condition(&mut self, reason: &str, pixels: usize, applies: bool) {
+        if applies {
+            self.conditions.entry(reason.into()).or_default()[size_bin(pixels)] += 1;
+            self.condition_pixels.entry(reason.into()).or_default()[size_bin(pixels)] += pixels;
+        }
+    }
+}
+
+fn size_bin(pixels: usize) -> usize {
+    match pixels {
+        1 => 0,
+        2 => 1,
+        3..=4 => 2,
+        _ => 3,
+    }
 }
 
 #[derive(Default)]
@@ -280,6 +337,66 @@ fn unambiguous_attachment(labels: &[u8], i: usize, label: u8, w: usize, h: usize
     incident_groups(labels, i, label, w, h) == 1 && incident_groups(labels, i, labels[i], w, h) <= 1
 }
 
+// Diagnostic hypothesis H1: a physically bounded island, fully enclosed in a
+// locally flat source field. This is deliberately stricter than adjacency.
+#[allow(clippy::too_many_arguments)]
+fn enclosed_close_target(
+    node: &Node,
+    nodes: &[Node],
+    labels: &[u8],
+    samples: &[[f64; 3]],
+    palette: &[[f64; 3]],
+    dimensions: [usize; 2],
+    scale: [f64; 2],
+    limits: (f64, f64),
+) -> Option<u8> {
+    let [w, h] = dimensions;
+    let (max_width, bound) = limits;
+    if node.edges.len() != 1 || node.width_mm > max_width {
+        return None;
+    }
+    let (&other, edge) = node.edges.first_key_value()?;
+    let target = &nodes[other];
+    if edge.length_mm + 1e-12 < node.perimeter_mm
+        || target.pixels.len() < node.pixels.len().saturating_mul(2).max(4)
+    {
+        return None;
+    }
+    let (mut lo, mut hi) = ([usize::MAX; 2], [0; 2]);
+    for &i in &node.pixels {
+        let xy = [i % w, i / w];
+        for axis in 0..2 {
+            lo[axis] = lo[axis].min(xy[axis]);
+            hi[axis] = hi[axis].max(xy[axis]);
+        }
+    }
+    if (0..2).any(|axis| (hi[axis] - lo[axis] + 1) as f64 * scale[axis] > max_width + 1e-12)
+        || lo[0] < 2
+        || lo[1] < 2
+        || hi[0] + 2 >= w
+        || hi[1] + 2 >= h
+    {
+        return None;
+    }
+    for y in lo[1] - 2..=hi[1] + 2 {
+        for x in lo[0] - 2..=hi[0] + 2 {
+            let i = y * w + x;
+            if labels[i] != node.label && labels[i] != target.label {
+                return None;
+            }
+            // Original samples, including the complete two-pixel context,
+            // must all fit the same fixed palette colour error ball.
+            if squared_distance(samples[i], palette[target.label as usize]).sqrt() > bound {
+                return None;
+            }
+        }
+    }
+    if edge.contrast_sum / edge.samples as f64 > bound {
+        return None;
+    }
+    Some(target.label)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     labels: &mut [u8],
@@ -291,6 +408,25 @@ pub(super) fn prepare(
     mode: PreparationMode,
     cancel: Option<&AtomicBool>,
 ) -> Result<Prepared, String> {
+    prepare_inner(
+        labels, image, palette, protected, pinned, scale, mode, cancel, 3, true, 0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_inner(
+    labels: &mut [u8],
+    image: &RgbaImage,
+    palette: &[[f64; 3]],
+    protected: &[bool],
+    pinned: usize,
+    scale: [f64; 2],
+    mode: PreparationMode,
+    cancel: Option<&AtomicBool>,
+    passes: usize,
+    audit_limit: bool,
+    initial_work: u64,
+) -> Result<Prepared, String> {
     cancelled(cancel)?;
     // Disabled preparation never allocates a RAG or an OKLab sample map.
     // Its component totals are filled by the existing tracing traversal.
@@ -300,6 +436,7 @@ pub(super) fn prepare(
             after: 0,
             changed: 0,
             uncertain: 0,
+            diagnostics: PreparationDiagnostics::default(),
         });
     }
     let (w, h) = (image.width() as usize, image.height() as usize);
@@ -318,10 +455,13 @@ pub(super) fn prepare(
     let before = nodes.len();
     let (max_width, color_bound, residual_bound) = mode.limits();
     let mut uncertain = BTreeSet::new();
-    let mut comparison_work = 0_u64;
+    let mut comparison_work = initial_work;
+    let mut diagnostics = PreparationDiagnostics::default();
+    let mut last_changes = 0;
     if mode != PreparationMode::Legacy {
-        for _ in 0..3 {
+        for _ in 0..passes {
             let mut changes = 0;
+            let mut diagnostic = PreparationPass::default();
             // Invalidated dependencies are not evaluated until a rebuilt RAG
             // provides their current size, width, boundary and contrast.
             let mut invalidated = BTreeSet::new();
@@ -330,29 +470,130 @@ pub(super) fn prepare(
             for id in order {
                 cancelled(cancel)?;
                 let node = &nodes[id];
-                if invalidated.contains(&id)
-                    || node.protected
-                    || usize::from(node.label) < pinned
-                    || node.width_mm > max_width + 1e-12
-                    || node.edges.is_empty()
-                {
-                    continue;
-                }
-                if comparison_work > 50_000_000 {
-                    uncertain.insert(node.pixels[0]);
-                    continue;
-                }
                 let mut lo = [f64::INFINITY; 3];
                 let mut hi = [f64::NEG_INFINITY; 3];
-                for &i in &node.pixels {
+                for (offset, &i) in node.pixels.iter().enumerate() {
+                    if offset % 4096 == 0 {
+                        cancelled(cancel)?;
+                    }
                     for c in 0..3 {
                         lo[c] = lo[c].min(samples[i][c]);
                         hi[c] = hi[c].max(samples[i][c]);
                     }
                 }
+                let flat = squared_distance(lo, hi).sqrt() < 0.025;
+                let count = node.pixels.len();
+                diagnostic.condition("flat_source", count, flat);
+                diagnostic.condition("protected", count, node.protected);
+                diagnostic.condition("pinned", count, usize::from(node.label) < pinned);
+                diagnostic.condition("width", count, node.width_mm > max_width + 1e-12);
+                diagnostic.condition("invalidation", count, invalidated.contains(&id));
+                let enough = node
+                    .edges
+                    .iter()
+                    .any(|(&other, _)| nodes[other].pixels.len() >= count.saturating_mul(2).max(4));
+                let supported = node.edges.iter().any(|(&other, edge)| {
+                    nodes[other].pixels.len() >= count.saturating_mul(2).max(4)
+                        && edge.length_mm >= 0.1 * node.perimeter_mm
+                });
+                diagnostic.condition("insufficient_neighbor", count, !enough);
+                diagnostic.condition("weak_boundary", count, enough && !supported);
+                let valid_enough = node.edges.iter().any(|(&other, _)| {
+                    !invalidated.contains(&other)
+                        && nodes[other].pixels.len() >= count.saturating_mul(2).max(4)
+                });
+                let valid_supported = node.edges.iter().any(|(&other, edge)| {
+                    !invalidated.contains(&other)
+                        && nodes[other].pixels.len() >= count.saturating_mul(2).max(4)
+                        && edge.length_mm >= 0.1 * node.perimeter_mm
+                });
+                diagnostic.condition("target_invalidation", count, supported && !valid_supported);
+                let probe_work = if flat && count <= 4 {
+                    count as u64 * 192 * (node.edges.len() as u64 + 1).pow(2)
+                } else {
+                    0
+                };
+                let can_probe =
+                    diagnostics.diagnostic_context_work_upper_bound + probe_work <= 50_000_000;
+                if can_probe {
+                    diagnostics.diagnostic_context_work_upper_bound += probe_work;
+                } else {
+                    diagnostics.diagnostic_context_limit_reached = true;
+                }
+                diagnostic.condition("diagnostic_limit", count, !can_probe);
+                let enclosed = if flat && count <= 4 && can_probe {
+                    enclosed_close_target(
+                        node,
+                        &nodes,
+                        labels,
+                        &samples,
+                        palette,
+                        [w, h],
+                        scale,
+                        (max_width, color_bound),
+                    )
+                } else {
+                    None
+                };
+                diagnostic.condition("flat_enclosed_close_target", count, enclosed.is_some());
+                let micro_aa = if flat && count <= 4 && can_probe {
+                    context::micro_aa_pair(
+                        node,
+                        &nodes,
+                        labels,
+                        &samples,
+                        palette,
+                        [w, h],
+                        scale,
+                        (max_width, residual_bound),
+                    )
+                } else {
+                    None
+                };
+                diagnostic.condition("flat_micro_aa_pair", count, micro_aa.is_some());
+                diagnostic.condition(
+                    "flat_micro_aa_one_ring",
+                    count,
+                    flat && count <= 4
+                        && can_probe
+                        && context::micro_aa_pair_one_ring(
+                            node,
+                            &nodes,
+                            labels,
+                            &samples,
+                            palette,
+                            [w, h],
+                            scale,
+                            (max_width, residual_bound),
+                        )
+                        .is_some(),
+                );
+                let early = if invalidated.contains(&id) {
+                    Some("invalidation")
+                } else if node.protected {
+                    Some("protected")
+                } else if usize::from(node.label) < pinned {
+                    Some("pinned")
+                } else if node.width_mm > max_width + 1e-12 {
+                    Some("width")
+                } else if node.edges.is_empty() {
+                    Some("no_neighbor")
+                } else if comparison_work > 50_000_000 {
+                    Some("computation_limit")
+                } else {
+                    None
+                };
+                if let Some(reason) = early {
+                    diagnostic.add(reason, count);
+                    if reason == "computation_limit" {
+                        uncertain.insert(node.pixels[0]);
+                    }
+                    continue;
+                }
                 // A flat rare colour is evidence of a possible intentional
                 // symbol, even when close to its neighbour or a colour mixture.
-                if squared_distance(lo, hi).sqrt() < 0.025 {
+                if flat {
+                    diagnostic.add("flat_source", count);
                     uncertain.insert(node.pixels[0]);
                     continue;
                 }
@@ -401,6 +642,14 @@ pub(super) fn prepare(
                         invalidated.insert(id);
                         invalidated.extend(node.edges.keys().copied());
                     }
+                    diagnostic.add(
+                        if changes != before_changes {
+                            "reassigned_close"
+                        } else {
+                            "topology"
+                        },
+                        count,
+                    );
                     continue;
                 }
                 // AA evidence needs TWO incident endpoint regions, sufficient
@@ -423,6 +672,7 @@ pub(super) fn prepare(
                 // Uniform small symbols/intentional flat stripes are ambiguous,
                 // even if their colour happens to sit between their neighbours.
                 if squared_distance(lo, hi).sqrt() < 0.025 {
+                    diagnostic.add("flat_source", count);
                     uncertain.insert(node.pixels[0]);
                     continue;
                 }
@@ -493,21 +743,191 @@ pub(super) fn prepare(
                         invalidated.insert(id);
                         invalidated.extend(node.edges.keys().copied());
                     }
+                    diagnostic.add(
+                        if changes != before_changes {
+                            "reassigned_aa"
+                        } else {
+                            "topology"
+                        },
+                        count,
+                    );
                 } else {
+                    diagnostic.add(
+                        if supported && !valid_supported {
+                            "invalidation"
+                        } else if !valid_enough {
+                            "insufficient_neighbor"
+                        } else if !valid_supported {
+                            "weak_boundary"
+                        } else {
+                            "color_error"
+                        },
+                        count,
+                    );
                     uncertain.insert(node.pixels[0]);
                 }
             }
+            diagnostics.passes.push(diagnostic);
+            last_changes = changes;
             if changes == 0 {
                 break;
             }
             (nodes, _) = graph(labels, &samples, protected, w, h, scale, cancel)?;
         }
     }
+    // Keep all Phase 2 decisions first. This new sweep handles only formerly
+    // ambiguous flat microcomponents; it never applies the hypothetical fourth
+    // ordinary RAG pass. Candidates with invalidated endpoints are retained.
+    if mode == PreparationMode::Contextual && audit_limit {
+        let mut diagnostic = PreparationPass::default();
+        let mut invalidated = BTreeSet::new();
+        let mut order: Vec<_> = (0..nodes.len()).collect();
+        order.sort_by_key(|&id| (nodes[id].pixels.len(), id));
+        for id in order {
+            cancelled(cancel)?;
+            let node = &nodes[id];
+            let count = node.pixels.len();
+            let reason = if invalidated.contains(&id) {
+                Some("invalidation")
+            } else if node.protected {
+                Some("protected")
+            } else if usize::from(node.label) < pinned {
+                Some("pinned")
+            } else if node.width_mm > max_width + 1e-12 {
+                Some("width")
+            } else if count > 4 {
+                Some("not_microcomponent")
+            } else if node.edges.is_empty() {
+                Some("no_neighbor")
+            } else if node.edges.keys().any(|other| invalidated.contains(other)) {
+                Some("invalidation")
+            } else if comparison_work > 50_000_000 {
+                Some("computation_limit")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                diagnostic.add(reason, count);
+                continue;
+            }
+            let mut lo = [f64::INFINITY; 3];
+            let mut hi = [f64::NEG_INFINITY; 3];
+            for &i in &node.pixels {
+                for c in 0..3 {
+                    lo[c] = lo[c].min(samples[i][c]);
+                    hi[c] = hi[c].max(samples[i][c]);
+                }
+            }
+            if squared_distance(lo, hi).sqrt() >= 0.025 {
+                diagnostic.add("not_flat", count);
+                continue;
+            }
+            // Conservative bound for the small endpoint/context comparisons.
+            comparison_work += count as u64 * 64 * (node.edges.len() as u64 + 1).pow(2);
+            if comparison_work > 50_000_000 {
+                diagnostic.add("computation_limit", count);
+                continue;
+            }
+            let enclosed = enclosed_close_target(
+                node,
+                &nodes,
+                labels,
+                &samples,
+                palette,
+                [w, h],
+                scale,
+                (max_width, color_bound),
+            );
+            let aa = if enclosed.is_none() {
+                context::micro_aa_pair_one_ring(
+                    node,
+                    &nodes,
+                    labels,
+                    &samples,
+                    palette,
+                    [w, h],
+                    scale,
+                    (max_width, residual_bound),
+                )
+            } else {
+                None
+            };
+            let Some((a, b)) = enclosed.map(|v| (v, v)).or(aa) else {
+                diagnostic.add("uncertain_context", count);
+                uncertain.insert(node.pixels[0]);
+                continue;
+            };
+            let mut changed = 0;
+            for &i in &node.pixels {
+                let target = if squared_distance(samples[i], palette[a as usize])
+                    <= squared_distance(samples[i], palette[b as usize])
+                {
+                    a
+                } else {
+                    b
+                };
+                if labels[i] == node.label && unambiguous_attachment(labels, i, target, w, h) {
+                    labels[i] = target;
+                    changed += 1;
+                }
+            }
+            diagnostic.add(
+                if changed == 0 {
+                    "topology"
+                } else if enclosed.is_some() {
+                    "reassigned_context_interior"
+                } else {
+                    "reassigned_context_aa"
+                },
+                count,
+            );
+            if changed > 0 {
+                invalidated.insert(id);
+                invalidated.extend(node.edges.keys().copied());
+            }
+            // A changed seed is not proof that the whole component resolved.
+            // Keep a witness for any source-colour residual before filtering
+            // historical seeds below (geometry has its own provenance mask).
+            if changed < count
+                && let Some(&i) = node.pixels.iter().find(|&&i| labels[i] == node.label)
+            {
+                uncertain.insert(i);
+            }
+        }
+        diagnostics.context_pass = Some(diagnostic);
+        (nodes, _) = graph(labels, &samples, protected, w, h, scale, cancel)?;
+        uncertain.retain(|&i| labels[i] == original[i]);
+    }
+    diagnostics.comparison_work = comparison_work - initial_work;
+    if audit_limit && diagnostics.passes.len() == passes && last_changes > 0 {
+        let mut probe = labels.to_vec();
+        let probed = prepare_inner(
+            &mut probe,
+            image,
+            palette,
+            protected,
+            pinned,
+            scale,
+            mode,
+            cancel,
+            1,
+            false,
+            comparison_work,
+        )?;
+        diagnostics.next_pass_changed_pixels = probed.changed;
+        diagnostics.limit_probe_comparison_work = probed.diagnostics.comparison_work;
+        diagnostics.limit_probe = probed.diagnostics.passes.into_iter().next();
+    }
     Ok(Prepared {
         before,
         after: nodes.len(),
-        changed: original.iter().zip(labels).filter(|(a, b)| a != b).count(),
+        changed: original
+            .iter()
+            .zip(labels.iter())
+            .filter(|(a, b)| a != b)
+            .count(),
         uncertain: uncertain.len(),
+        diagnostics,
     })
 }
 
@@ -710,6 +1130,119 @@ mod tests {
         assert_ne!(
             labels[39], 0,
             "a chain of weak contrasts must not swallow the entire ramp"
+        );
+    }
+
+    #[test]
+    fn contextual_noise_absorption_preserves_opposite_details_and_user_locks() {
+        let image = RgbaImage::from_fn(24, 24, |x, y| {
+            let gray = match (x, y) {
+                (8, 8) => 170,
+                (17, 8) => 0,
+                (17, 12..=18) => 255,
+                _ => 160,
+            };
+            Rgba([gray, gray, gray, 255])
+        });
+        let palette: Vec<_> = [160, 170, 0, 255].map(|g| srgb_to_oklab([g; 3])).into();
+        let source: Vec<_> = image
+            .pixels()
+            .map(|p| match p[0] {
+                170 => 1,
+                0 => 2,
+                255 => 3,
+                _ => 0,
+            })
+            .collect();
+        for (mode, pinned, protect, scale, expected) in [
+            (PreparationMode::Standard, 0, false, 0.2, 0),
+            (PreparationMode::Contextual, 0, false, 0.2, 1),
+            (PreparationMode::Contextual, 2, false, 0.2, 0),
+            (PreparationMode::Contextual, 0, true, 0.2, 0),
+            (PreparationMode::Contextual, 0, false, 1., 0),
+        ] {
+            let mut labels = source.clone();
+            let mut protected = vec![false; labels.len()];
+            protected[8 * 24 + 8] = protect;
+            let report = prepare(
+                &mut labels,
+                &image,
+                &palette,
+                &protected,
+                pinned,
+                [scale; 2],
+                mode,
+                None,
+            )
+            .unwrap();
+            assert_eq!(report.changed, expected);
+            for (i, (&a, &b)) in source.iter().zip(&labels).enumerate() {
+                assert!(a == b || (i == 8 * 24 + 8 && b == 0));
+            }
+            assert!(!labels.contains(&255), "noise must be absorbed, not masked");
+        }
+    }
+
+    #[test]
+    fn contextual_flat_edge_sample_is_distinct_from_an_isolated_symbol() {
+        let image = RgbaImage::from_fn(24, 24, |x, y| {
+            let gray = if (x == 11 && y == 12) || (x == 5 && y == 5) {
+                96
+            } else if x < 12 {
+                0
+            } else {
+                255
+            };
+            Rgba([gray, gray, gray, 255])
+        });
+        let palette = vec![
+            srgb_to_oklab([0; 3]),
+            srgb_to_oklab([255; 3]),
+            srgb_to_oklab([96; 3]),
+        ];
+        let source: Vec<_> = image
+            .pixels()
+            .map(|p| match p[0] {
+                0 => 0,
+                255 => 1,
+                _ => 2,
+            })
+            .collect();
+        let mut standard = source.clone();
+        prepare(
+            &mut standard,
+            &image,
+            &palette,
+            &vec![false; 576],
+            0,
+            [0.2; 2],
+            PreparationMode::Standard,
+            None,
+        )
+        .unwrap();
+        assert_eq!(standard, source);
+        let mut labels = source.clone();
+        let report = prepare(
+            &mut labels,
+            &image,
+            &palette,
+            &vec![false; 576],
+            0,
+            [0.2; 2],
+            PreparationMode::Contextual,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.changed, 1);
+        assert_eq!(labels[12 * 24 + 11], 0);
+        assert_eq!(
+            labels[5 * 24 + 5],
+            2,
+            "an isolated same-colour symbol has no AA boundary evidence"
+        );
+        assert_eq!(
+            labels.iter().filter(|&&v| v == 1).count(),
+            source.iter().filter(|&&v| v == 1).count()
         );
     }
 }

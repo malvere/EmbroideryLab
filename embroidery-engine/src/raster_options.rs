@@ -14,7 +14,7 @@ use std::{
 
 #[path = "raster_preparation.rs"]
 mod preparation;
-pub use preparation::{PREPARATION_VERSION, PreparationMode};
+pub use preparation::{PREPARATION_VERSION, PreparationDiagnostics, PreparationMode};
 
 /// Background masks are explicit import decisions. Tolerance is Euclidean
 /// distance in ordinary 8-bit RGB coordinates (0..sqrt(3*255^2)), not percent.
@@ -878,6 +878,8 @@ pub struct RasterTraceReport {
     pub preparation_changed_pixels: usize,
     pub preparation_changed_area_mm2: f64,
     pub preparation_uncertain_regions: usize,
+    #[serde(default)]
+    pub preparation_diagnostics: Box<PreparationDiagnostics>,
     /// Residual components kept because their pre-preparation source region
     /// already passed the user's thresholds. Their small new area is not an
     /// instruction to delete previously accepted source geometry.
@@ -915,6 +917,7 @@ impl Default for RasterTraceReport {
             preparation_changed_pixels: 0,
             preparation_changed_area_mm2: 0.,
             preparation_uncertain_regions: 0,
+            preparation_diagnostics: Box::default(),
             preparation_preserved_residual_regions: 0,
             labels_before_preparation: Vec::new(),
             labels_after_preparation: Vec::new(),
@@ -1202,6 +1205,8 @@ fn trace_pixels_with_source_report(
         preparation_changed_pixels: prepared.changed,
         preparation_changed_area_mm2: prepared.changed as f64 * scale * scale_y,
         preparation_uncertain_regions: prepared.uncertain,
+        preparation_version: options.preparation.version(),
+        preparation_diagnostics: Box::new(prepared.diagnostics),
         labels_before_preparation,
         labels_after_preparation: labels.clone(),
         palette: palette
@@ -1390,7 +1395,8 @@ fn trace_pixels_with_source_report(
             object_id: 0,
             point: None,
             message: format!(
-                "Experimental boundary preparation v{PREPARATION_VERSION}: reassigned {} pixels ({:.4} mm²), {} → {} connected components; {} ambiguous narrow regions retained; {} residual regions preserved by original threshold provenance. Review the changed-area overlay and perform a physical sew-out.",
+                "Experimental boundary preparation v{}: reassigned {} pixels ({:.4} mm²), {} → {} connected components; {} ambiguous narrow regions retained; {} residual regions preserved by original threshold provenance. Review the changed-area overlay and perform a physical sew-out.",
+                options.preparation.version(),
                 prepared.changed, report.preparation_changed_area_mm2,
                 prepared.before, prepared.after, prepared.uncertain,
                 report.preparation_preserved_residual_regions
