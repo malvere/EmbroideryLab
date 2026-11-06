@@ -1,0 +1,526 @@
+{
+  "schema": 1,
+  "reviewed_utc": "2026-11-06T00:11:32.7091457Z",
+  "target": "x86_64-pc-windows-gnu",
+  "metadata_sha256": "dd61cee9dfc41d7a303c5485b3c1b8857a106c762baa970deaa1ccce5670eaaf",
+  "notes": "Full upstream notices are retained verbatim at the exact cached crate VCS commit. SPDX OR alternatives choose the recorded branch; additional bundled notices remain applicable. No copyright year was invented.",
+  "packages": [
+    {
+      "name": "accesskit",
+      "version": "0.21.1",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "The AccessKit contributors"
+      ],
+      "repository": "https://github.com/AccessKit/accesskit",
+      "upstream_repository": "https://github.com/AccessKit/accesskit",
+      "upstream_commit": "0b6901a8c8e6fb1cb5a2dc7c19dc7bee1cc5ad09",
+      "upstream_path": "common",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/AccessKit_accesskit-0b6901a8c8e6fb1cb5a2dc7c19dc7bee1cc5ad09/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source_url": "https://raw.githubusercontent.com/AccessKit/accesskit/0b6901a8c8e6fb1cb5a2dc7c19dc7bee1cc5ad09/LICENSE-MIT"
+        },
+        {
+          "file": "sources/AccessKit_accesskit-0b6901a8c8e6fb1cb5a2dc7c19dc7bee1cc5ad09/LICENSE.chromium",
+          "destination": "LICENSE.chromium",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+          "source_url": "https://raw.githubusercontent.com/AccessKit/accesskit/0b6901a8c8e6fb1cb5a2dc7c19dc7bee1cc5ad09/LICENSE.chromium"
+        }
+      ]
+    },
+    {
+      "name": "accesskit_consumer",
+      "version": "0.31.0",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "The AccessKit contributors"
+      ],
+      "repository": "https://github.com/AccessKit/accesskit",
+      "upstream_repository": "https://github.com/AccessKit/accesskit",
+      "upstream_commit": "5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3",
+      "upstream_path": "consumer",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/AccessKit_accesskit-5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source_url": "https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE-MIT"
+        },
+        {
+          "file": "sources/AccessKit_accesskit-5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE.chromium",
+          "destination": "LICENSE.chromium",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+          "source_url": "https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE.chromium"
+        }
+      ]
+    },
+    {
+      "name": "accesskit_windows",
+      "version": "0.29.2",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "The AccessKit contributors"
+      ],
+      "repository": "https://github.com/AccessKit/accesskit",
+      "upstream_repository": "https://github.com/AccessKit/accesskit",
+      "upstream_commit": "5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3",
+      "upstream_path": "platforms/windows",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/AccessKit_accesskit-5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source_url": "https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE-MIT"
+        },
+        {
+          "file": "sources/AccessKit_accesskit-5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE.chromium",
+          "destination": "LICENSE.chromium",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+          "source_url": "https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE.chromium"
+        }
+      ]
+    },
+    {
+      "name": "accesskit_winit",
+      "version": "0.29.2",
+      "license_expression": "Apache-2.0",
+      "selected_license": "Apache-2.0",
+      "authors": [
+        "The AccessKit contributors"
+      ],
+      "repository": "https://github.com/AccessKit/accesskit",
+      "upstream_repository": "https://github.com/AccessKit/accesskit",
+      "upstream_commit": "5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3",
+      "upstream_path": "platforms/winit",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/AccessKit_accesskit-5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE-APACHE",
+          "destination": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "source_url": "https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE-APACHE"
+        },
+        {
+          "file": "sources/AccessKit_accesskit-5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE.chromium",
+          "destination": "LICENSE.chromium",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+          "source_url": "https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE.chromium"
+        },
+        {
+          "file": "sources/AccessKit_accesskit-5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/accesskit_winit-COPYRIGHT-UPSTREAM.txt",
+          "destination": "COPYRIGHT-UPSTREAM.txt",
+          "sha256": "8f66c779519de460932950fc3240883b3d5dace439d9c024f05e7b1d5f9e46fd",
+          "source_url": "https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/platforms/winit/src/lib.rs",
+          "source_file_sha256": "cbe4ef8dde0a3aa3d9777e51f86eeff2eb4396e290ab5ea83494920b8005b631",
+          "extraction": "Exact leading upstream copyright/license comment block; source bytes hashed separately"
+        }
+      ]
+    },
+    {
+      "name": "cavalier_contours",
+      "version": "0.9.0",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Buck McCready <jbuckmccready@gmail.com>"
+      ],
+      "repository": "https://github.com/jbuckmccready/cavalier_contours",
+      "upstream_repository": "https://github.com/jbuckmccready/cavalier_contours",
+      "upstream_commit": "22887a824d22cd8ab50968a551f34cdb4508127f",
+      "upstream_path": "cavalier_contours",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/jbuckmccready_cavalier_contours-22887a824d22cd8ab50968a551f34cdb4508127f/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "e4799d23b484d76b287c665880b93917ae875afc08fb00559da2d66de1e0b816",
+          "source_url": "https://raw.githubusercontent.com/jbuckmccready/cavalier_contours/22887a824d22cd8ab50968a551f34cdb4508127f/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "clipboard-win",
+      "version": "5.4.3",
+      "license_expression": "BSL-1.0",
+      "selected_license": "BSL-1.0",
+      "authors": [
+        "Douman <douman@gmx.se>"
+      ],
+      "repository": "https://github.com/DoumanAsh/clipboard-win",
+      "upstream_repository": "https://github.com/DoumanAsh/clipboard-win",
+      "upstream_commit": "ed27008ae5d1f10cfbb266de039f0fb35fd05a56",
+      "upstream_path": "",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/DoumanAsh_clipboard-win-ed27008ae5d1f10cfbb266de039f0fb35fd05a56/LICENSE",
+          "destination": "LICENSE",
+          "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+          "source_url": "https://raw.githubusercontent.com/DoumanAsh/clipboard-win/ed27008ae5d1f10cfbb266de039f0fb35fd05a56/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "ecolor",
+      "version": "0.33.3",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>",
+        "Andreas Reich <reichandreas@gmx.de>"
+      ],
+      "repository": "https://github.com/emilk/egui",
+      "upstream_repository": "https://github.com/emilk/egui",
+      "upstream_commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+      "upstream_path": "crates/ecolor",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "eframe",
+      "version": "0.33.3",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+      ],
+      "repository": "https://github.com/emilk/egui/tree/main/crates/eframe",
+      "upstream_repository": "https://github.com/emilk/egui",
+      "upstream_commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+      "upstream_path": "crates/eframe",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "egui",
+      "version": "0.33.3",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+      ],
+      "repository": "https://github.com/emilk/egui",
+      "upstream_repository": "https://github.com/emilk/egui",
+      "upstream_commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+      "upstream_path": "crates/egui",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "egui-winit",
+      "version": "0.33.3",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+      ],
+      "repository": "https://github.com/emilk/egui/tree/main/crates/egui-winit",
+      "upstream_repository": "https://github.com/emilk/egui",
+      "upstream_commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+      "upstream_path": "crates/egui-winit",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "egui_glow",
+      "version": "0.33.3",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+      ],
+      "repository": "https://github.com/emilk/egui/tree/main/crates/egui_glow",
+      "upstream_repository": "https://github.com/emilk/egui",
+      "upstream_commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+      "upstream_path": "crates/egui_glow",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "emath",
+      "version": "0.33.3",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+      ],
+      "repository": "https://github.com/emilk/egui/tree/main/crates/emath",
+      "upstream_repository": "https://github.com/emilk/egui",
+      "upstream_commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+      "upstream_path": "crates/emath",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "epaint",
+      "version": "0.33.3",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+      ],
+      "repository": "https://github.com/emilk/egui/tree/main/crates/epaint",
+      "upstream_repository": "https://github.com/emilk/egui",
+      "upstream_commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+      "upstream_path": "crates/epaint",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "epaint_default_fonts",
+      "version": "0.33.3",
+      "license_expression": "(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0",
+      "selected_license": "MIT AND OFL-1.1 AND Ubuntu-font-1.0",
+      "authors": [
+        "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+      ],
+      "repository": "https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts",
+      "upstream_repository": "https://github.com/emilk/egui",
+      "upstream_commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+      "upstream_path": "crates/epaint_default_fonts",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT"
+        },
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/crates/epaint_default_fonts/fonts/emoji-icon-font-mit-license.txt",
+          "destination": "fonts/emoji-icon-font-mit-license.txt",
+          "sha256": "b9d2c1d909aa149996fd4c91dcb92b2362a04431640c1d200959da94caf8cde1",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/crates/epaint_default_fonts/fonts/emoji-icon-font-mit-license.txt"
+        },
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/crates/epaint_default_fonts/fonts/Hack-Regular.txt",
+          "destination": "fonts/Hack-Regular.txt",
+          "sha256": "47c0cccbeec7e8614548cc485588b28149e7874188df5f41b36efebcee285c87",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/crates/epaint_default_fonts/fonts/Hack-Regular.txt"
+        },
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/crates/epaint_default_fonts/fonts/OFL.txt",
+          "destination": "fonts/OFL.txt",
+          "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/crates/epaint_default_fonts/fonts/OFL.txt"
+        },
+        {
+          "file": "sources/emilk_egui-44cdd653e2317d300fb8a6c9c36b03f23991e803/crates/epaint_default_fonts/fonts/UFL.txt",
+          "destination": "fonts/UFL.txt",
+          "sha256": "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002",
+          "source_url": "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/crates/epaint_default_fonts/fonts/UFL.txt"
+        }
+      ]
+    },
+    {
+      "name": "geo",
+      "version": "0.31.0",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [],
+      "repository": "https://github.com/georust/geo",
+      "upstream_repository": "https://github.com/georust/geo",
+      "upstream_commit": "daf0515b0317b93480020a8cfb1dc7b46a4526ad",
+      "upstream_path": "geo",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/georust_geo-daf0515b0317b93480020a8cfb1dc7b46a4526ad/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "2f8267b247fd81e9555a2e196e119a5b341bcae21011cd93985c312f1312f727",
+          "source_url": "https://raw.githubusercontent.com/georust/geo/daf0515b0317b93480020a8cfb1dc7b46a4526ad/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "gl_generator",
+      "version": "0.14.0",
+      "license_expression": "Apache-2.0",
+      "selected_license": "Apache-2.0",
+      "authors": [
+        "Brendan Zabarauskas <bjzaba@yahoo.com.au>",
+        "Corey Richardson",
+        "Arseny Kapoulkine"
+      ],
+      "repository": "https://github.com/brendanzab/gl-rs/",
+      "upstream_repository": "https://github.com/brendanzab/gl-rs",
+      "upstream_commit": "ea503e8d5fb6d73c6030e6191ce738cd3bf3433e",
+      "upstream_path": null,
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/brendanzab_gl-rs-ea503e8d5fb6d73c6030e6191ce738cd3bf3433e/LICENSE",
+          "destination": "LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "source_url": "https://raw.githubusercontent.com/brendanzab/gl-rs/ea503e8d5fb6d73c6030e6191ce738cd3bf3433e/LICENSE"
+        },
+        {
+          "file": "sources/brendanzab_gl-rs-ea503e8d5fb6d73c6030e6191ce738cd3bf3433e/gl_generator-COPYRIGHT-UPSTREAM.txt",
+          "destination": "COPYRIGHT-UPSTREAM.txt",
+          "sha256": "7eb15307bafc2e83b48490a5a4f1024f860d00c98b173fb5b8fa11e4e6692a31",
+          "source_url": "https://raw.githubusercontent.com/brendanzab/gl-rs/ea503e8d5fb6d73c6030e6191ce738cd3bf3433e/gl_generator/lib.rs",
+          "source_file_sha256": "6f47da878479b503b5202bda84ad8935607264ac03c0b68203109fad9cd479db",
+          "extraction": "Exact leading upstream copyright/license comment block; source bytes hashed separately"
+        }
+      ]
+    },
+    {
+      "name": "i_overlay",
+      "version": "4.0.7",
+      "license_expression": "MIT",
+      "selected_license": "MIT",
+      "authors": [
+        "Nail Sharipov <nailxsharipov@gmail.com>"
+      ],
+      "repository": "https://github.com/iShape-Rust/iOverlay",
+      "upstream_repository": "https://github.com/iShape-Rust/iOverlay",
+      "upstream_commit": "a071220dfc6095edb82426b880a4019db3ea67b5",
+      "upstream_path": "iOverlay",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/iShape-Rust_iOverlay-a071220dfc6095edb82426b880a4019db3ea67b5/LICENSE",
+          "destination": "LICENSE",
+          "sha256": "260cc580f53a756821a0f35475e2cd6da790f8fed0efc058252fe1bed8f2689e",
+          "source_url": "https://raw.githubusercontent.com/iShape-Rust/iOverlay/a071220dfc6095edb82426b880a4019db3ea67b5/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "khronos_api",
+      "version": "3.1.0",
+      "license_expression": "Apache-2.0",
+      "selected_license": "Apache-2.0",
+      "authors": [
+        "Brendan Zabarauskas <bjzaba@yahoo.com.au>",
+        "Corey Richardson",
+        "Arseny Kapoulkine",
+        "Pierre Krieger <pierre.krieger1708@gmail.com>"
+      ],
+      "repository": "https://github.com/brendanzab/gl-rs/",
+      "upstream_repository": "https://github.com/brendanzab/gl-rs",
+      "upstream_commit": "f150967b1c44ae888e6676f93f639ebc82771bdc",
+      "upstream_path": null,
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/brendanzab_gl-rs-f150967b1c44ae888e6676f93f639ebc82771bdc/LICENSE",
+          "destination": "LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "source_url": "https://raw.githubusercontent.com/brendanzab/gl-rs/f150967b1c44ae888e6676f93f639ebc82771bdc/LICENSE"
+        },
+        {
+          "file": "sources/brendanzab_gl-rs-f150967b1c44ae888e6676f93f639ebc82771bdc/khronos_api-COPYRIGHT-UPSTREAM.txt",
+          "destination": "COPYRIGHT-UPSTREAM.txt",
+          "sha256": "7eb15307bafc2e83b48490a5a4f1024f860d00c98b173fb5b8fa11e4e6692a31",
+          "source_url": "https://raw.githubusercontent.com/brendanzab/gl-rs/f150967b1c44ae888e6676f93f639ebc82771bdc/khronos_api/src/lib.rs",
+          "source_file_sha256": "befbc0e187097e6c9da1ecbd79e0e1af462b6f6466108247745f6aa38abe0673",
+          "extraction": "Exact leading upstream copyright/license comment block; source bytes hashed separately"
+        }
+      ]
+    },
+    {
+      "name": "profiling",
+      "version": "1.0.18",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Philip Degarmo <aclysma@gmail.com>"
+      ],
+      "repository": "https://github.com/aclysma/profiling",
+      "upstream_repository": "https://github.com/aclysma/profiling",
+      "upstream_commit": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "upstream_path": "profiling",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/aclysma_profiling-8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333",
+          "source_url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "name": "rstar",
+      "version": "0.12.2",
+      "license_expression": "MIT OR Apache-2.0",
+      "selected_license": "MIT",
+      "authors": [
+        "Stefan Altmayer <stoeoef@gmail.com>",
+        "The Georust Developers <mods@georust.org>"
+      ],
+      "repository": "https://github.com/georust/rstar",
+      "upstream_repository": "https://github.com/georust/rstar",
+      "upstream_commit": "c8c5bf9e41468281d030869d409e3f67f1aaf5b7",
+      "upstream_path": "rstar",
+      "commit_evidence": "Matching cached crate .cargo_vcs_info.json",
+      "files": [
+        {
+          "file": "sources/georust_rstar-c8c5bf9e41468281d030869d409e3f67f1aaf5b7/LICENSE-MIT",
+          "destination": "LICENSE-MIT",
+          "sha256": "9b3a76c27bac8f3e0ff2d1f64f65941c50310ae3ff69318cea230bd4a36822c5",
+          "source_url": "https://raw.githubusercontent.com/georust/rstar/c8c5bf9e41468281d030869d409e3f67f1aaf5b7/LICENSE-MIT"
+        }
+      ]
+    }
+  ]
+}

@@ -132,7 +132,7 @@ impl Language {
     }
 }
 
-fn preferences_path() -> Option<PathBuf> {
+pub(super) fn preferences_path() -> Option<PathBuf> {
     let nonempty_env = |name| std::env::var_os(name).filter(|value| !value.is_empty());
     nonempty_env("APPDATA")
         .or_else(|| nonempty_env("XDG_CONFIG_HOME"))

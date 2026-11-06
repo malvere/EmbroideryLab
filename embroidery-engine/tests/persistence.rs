@@ -56,7 +56,8 @@ fn raster_import_embeds_source_for_gui_and_cli_without_original_file() {
         &embroidery_lab::import::RasterOptions::default(),
     )
     .unwrap();
-    assert_eq!(project.version, 4);
+    assert_eq!(project.version, 5);
+    assert!(project.raster_recipe.is_some());
     assert_eq!(
         project.source_image.as_ref().unwrap().encoded,
         original.encoded
@@ -143,4 +144,48 @@ fn recovery_is_separate_from_last_saved_project_and_can_be_cleared() {
     persistence::clear_recovery(Some(&path)).unwrap();
     assert!(persistence::load_recovery(Some(&path)).unwrap().is_none());
     assert_ne!(persistence::recovery_path(None), path);
+}
+
+#[test]
+fn independent_underlay_angle_uses_schema_five_and_legacy_none_is_omitted() {
+    let path = folder("underlay-angle").join("direction.elab");
+    let mut project = Project::demo();
+    assert!(project.objects[0].settings.underlay_angle_deg.is_none());
+    let fingerprint = persistence::object_fingerprint(&project.objects[0]);
+    project.save(&path).unwrap();
+    let legacy = Project::load(&path).unwrap();
+    assert_eq!(legacy.version, 1);
+    assert_eq!(
+        persistence::object_fingerprint(&legacy.objects[0]),
+        fingerprint
+    );
+    assert!(
+        !std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("underlay_angle_deg")
+    );
+    project.objects[0].settings.underlay_angle_deg = Some(31.25);
+    let before = embroidery_lab::engine::generate(&project).unwrap();
+    project.save(&path).unwrap();
+    let reopened = Project::load(&path).unwrap();
+    assert_eq!(reopened.version, 5);
+    assert_eq!(reopened.objects[0].settings.underlay_angle_deg, Some(31.25));
+    let after = embroidery_lab::engine::generate(&reopened).unwrap();
+    assert_eq!(
+        embroidery_lab::dst::encode(&before, "angle").unwrap(),
+        embroidery_lab::dst::encode(&after, "angle").unwrap()
+    );
+    let saved = std::fs::read(&path).unwrap();
+    for invalid in [f64::NAN, f64::INFINITY, -180.1, 180.1] {
+        project.objects[0].settings.underlay_angle_deg = Some(invalid);
+        assert!(
+            project
+                .validate_limits()
+                .unwrap_err()
+                .contains("underlay angle")
+        );
+        assert!(embroidery_lab::engine::generate(&project).is_err());
+        assert!(project.save(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+    }
 }

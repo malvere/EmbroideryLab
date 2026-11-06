@@ -1,6 +1,10 @@
 use super::*;
 use embroidery_lab::{axis_edit, persistence, satin_edit};
 
+#[cfg(test)]
+#[path = "protected_ui_tests.rs"]
+mod protected_ui_tests;
+
 pub(super) fn project_equal(a: &Project, b: &Project) -> bool {
     serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
 }
@@ -76,6 +80,60 @@ pub(super) fn nearest_rail(column: &SatinColumn, point: Point) -> Option<(bool, 
 }
 
 impl Editor {
+    /// These choices can replace or close the document. Guard the editor before
+    /// drawing their modal, including the first frame before egui knows its layer.
+    pub(super) fn decision_pending(&self) -> bool {
+        self.recovery.is_some() || self.confirm_close || self.confirm_new || self.discard.is_some()
+    }
+
+    pub(super) fn document_confirmations(&mut self, ctx: &egui::Context) {
+        let language = self.language;
+        if self.confirm_close {
+            egui::Modal::new(egui::Id::new("close-project-confirmation")).show(ctx, |ui| {
+                ui.heading(language.text("Save before closing?"));
+                ui.label(language.text("Your editable project has unsaved changes."));
+                ui.horizontal(|ui| {
+                    if ui.button(language.text("Save project")).clicked() {
+                        self.save();
+                        if !self.dirty {
+                            self.confirm_close = false;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }
+                    if ui.button(language.text("Discard and close")).clicked() {
+                        let _ = persistence::clear_recovery(self.path.as_deref());
+                        self.dirty = false;
+                        self.confirm_close = false;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    if ui.button(language.text("Cancel")).clicked() {
+                        self.confirm_close = false;
+                    }
+                });
+            });
+        } else if let Some(path) = self.discard.clone() {
+            egui::Modal::new(egui::Id::new("open-project-confirmation")).show(ctx, |ui| {
+                ui.heading(language.text("Unsaved project"));
+                ui.label(language.text("Save your editable project before opening another file."));
+                ui.horizontal(|ui| {
+                    if ui.button(language.text("Save project")).clicked() {
+                        self.save();
+                        if !self.dirty {
+                            self.discard = None;
+                            self.request_open(path.clone(), ctx);
+                        }
+                    }
+                    if ui.button(language.text("Discard and open")).clicked() {
+                        self.discard = None;
+                        self.request_open(path.clone(), ctx);
+                    }
+                    if ui.button(language.text("Cancel")).clicked() {
+                        self.discard = None;
+                    }
+                });
+            });
+        }
+    }
     pub(super) fn refresh_mask_texture(&mut self, ctx: &egui::Context) {
         if let Some(preview) = &self.region_preview {
             let pixels = preview.overlay();
@@ -87,31 +145,13 @@ impl Editor {
                 Some(ctx.load_texture("region mask", data, egui::TextureOptions::NEAREST));
         }
     }
-    pub(super) fn preview_regions(&mut self, ctx: &egui::Context) {
-        let Some(preview) = &self.import_preview else {
-            return;
-        };
-        let result = self.trace_import_preview().and_then(|project| {
-            if let Some(previous) = &self.region_preview {
-                previous.apply_overrides_to(project)
-            } else {
-                embroidery_lab::region_edit::RegionPreview::from_project(
-                    project,
-                    preview.pixels.width(),
-                    preview.pixels.height(),
-                )
-            }
-        });
-        match result {
-            Ok(preview) => {
-                self.region_preview = Some(preview);
-                self.refresh_mask_texture(ctx);
-                self.result(Ok("Click a region in the mask to include or exclude it. Rebuild preview after changing trace settings.".into()));
-            }
-            Err(e) => self.result(Err(e)),
-        }
+    pub(super) fn preview_regions(&mut self, _ctx: &egui::Context) {
+        self.start_trace_job(true);
     }
     pub(super) fn complete_region_split(&mut self) {
+        if self.stitch_only || self.selected_locked() {
+            return;
+        }
         match embroidery_lab::region_edit::split_object(&self.project, self.selected, &self.draft) {
             Ok(candidate) => {
                 self.snapshot();
@@ -213,6 +253,19 @@ impl Editor {
         self.redo.clear();
         self.changed();
     }
+    /// Inspecting an object should not clone embedded artwork every frame.
+    pub(super) fn record_object_field_edit(&mut self, object: Object, version: u32) {
+        if self.field_before.is_none() {
+            let mut before = self.project.clone();
+            if let Some(index) = before.objects.iter().position(|o| o.id == object.id) {
+                before.objects[index] = object;
+                before.version = version;
+                self.field_before = Some(before);
+            }
+        }
+        self.redo.clear();
+        self.changed();
+    }
     pub(super) fn clear_selection(&mut self) {
         self.selected_node = None;
         self.selected_rail = None;
@@ -241,6 +294,7 @@ impl Editor {
             let id = self.project.objects.get(self.selected).map(|o| o.id);
             self.redo
                 .push(std::mem::replace(&mut self.project, previous));
+            self.image = None;
             self.selected = id
                 .and_then(|id| self.project.objects.iter().position(|o| o.id == id))
                 .unwrap_or(
@@ -294,6 +348,9 @@ impl Editor {
         column: SatinColumn,
         hide_source: bool,
     ) -> Result<(), String> {
+        if hide_source && self.selected_locked() {
+            return Err("Object is locked. Unlock it in Layers to edit.".into());
+        }
         engine::satin_stations(&column, 0.4)?;
         let id = self.next_id()?;
         let source = self.project.objects.get(self.selected);
@@ -381,6 +438,9 @@ impl Editor {
         &mut self,
         action: impl FnOnce(&mut SatinColumn) -> Result<(), String>,
     ) {
+        if self.stitch_only || self.selected_locked() {
+            return;
+        }
         let Some(mut column) = self
             .project
             .objects
@@ -400,7 +460,7 @@ impl Editor {
         }
     }
     pub(super) fn delete_selection(&mut self) {
-        if self.stitch_only {
+        if self.stitch_only || self.selected_locked() {
             return;
         }
         if let Some(index) = self.selected_rung {
@@ -426,6 +486,9 @@ impl Editor {
         }
     }
     fn edit_branch(&mut self, action: impl FnOnce(&mut Object) -> Result<(), String>) {
+        if self.stitch_only || self.selected_locked() {
+            return;
+        }
         let Some(mut candidate) = self.project.objects.get(self.selected).cloned() else {
             return;
         };
@@ -442,6 +505,9 @@ impl Editor {
         }
     }
     fn split_column(&mut self) {
+        if self.stitch_only || self.selected_locked() {
+            return;
+        }
         let Some(column) = self
             .project
             .objects
@@ -484,6 +550,9 @@ impl Editor {
         }
     }
     fn convert_branch(&mut self, index: usize) {
+        if self.stitch_only || self.selected_locked() {
+            return;
+        }
         let result = (|| -> Result<(Project, usize), String> {
             let source = self
                 .project
@@ -538,7 +607,7 @@ impl Editor {
         }
     }
     pub(super) fn geometry_tools(&mut self, ui: &mut egui::Ui) {
-        if self.stitch_only {
+        if self.stitch_only || self.selected_locked() {
             return;
         }
         let language = self.language;
@@ -796,7 +865,7 @@ impl Editor {
                         && let Err(error) = engine::satin_stations(c, 0.4)
                     {
                         ui.colored_label(
-                            Color32::from_rgb(161, 43, 50),
+                            ui.visuals().error_fg_color,
                             language.message(&error).as_ref(),
                         );
                     }
@@ -806,52 +875,6 @@ impl Editor {
                     self.cancel_draft();
                 }
             });
-        let rail_satin = self
-            .project
-            .objects
-            .get(self.selected)
-            .is_some_and(|o| o.satin_column.is_some());
-        if rail_satin {
-            ui.collapsing(language.text("Additional underlay"), |ui| {
-                let before = self.project.clone();
-                let mut changed = false;
-                let s = &mut self.project.objects[self.selected].settings;
-                changed |= ui
-                    .checkbox(&mut s.edge_underlay, language.text("Edgewalk underlay"))
-                    .changed();
-                changed |= ui
-                    .checkbox(&mut s.zigzag_underlay, language.text("Zigzag underlay"))
-                    .changed();
-                ui.label(language.text("Underlay inset (mm)"));
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut s.underlay_inset_mm)
-                            .speed(0.05)
-                            .range(0. ..=5.),
-                    )
-                    .changed();
-                ui.label(language.text("Underlay spacing (mm)"));
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut s.underlay_spacing_mm)
-                            .speed(0.1)
-                            .range(0.5..=10.),
-                    )
-                    .changed();
-                ui.label(language.text("Underlay stitch length (mm)"));
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut s.underlay_length_mm)
-                            .speed(0.1)
-                            .range(0.5..=10.),
-                    )
-                    .changed();
-                if changed {
-                    self.project.version = 4;
-                    self.record_field_edit(before);
-                }
-            });
-        }
         let paths = self
             .project
             .objects
@@ -887,31 +910,335 @@ impl Editor {
                 }
             });
         }
-        ui.collapsing(language.text("Quality checks"),|ui|{
-            ui.checkbox(&mut self.show_quality,language.text("Highlight stitch warnings"));
-            ui.small(language.text("Heuristic checks: stitches below 0.3 mm, jumps above 10 mm, more than 20 punctures per 1 mm² cell."));
-            if self.stale {ui.label(language.text("Generate stitches to refresh quality checks."));}
-            else{
-                let total=self.quality_issues.len();let issues:Vec<_>=self.quality_issues.iter().take(100).cloned().collect();
-                ui.label(format!("{}: {}",language.text("Warnings"),total));
-                egui::ScrollArea::vertical().max_height(130.).show(ui,|ui|{
-                    for issue in issues.iter().take(100){
-                        let label=match issue.kind{embroidery_lab::quality::QualityKind::ShortStitch=>"Short stitch",embroidery_lab::quality::QualityKind::LongJump=>"Long jump",embroidery_lab::quality::QualityKind::DenseArea=>"Dense area"};
-                        if ui.small_button(format!("{} · {}",language.text(label),issue.index+1)).clicked(){
-                            if let Some(index)=self.project.objects.iter().position(|o|o.id==issue.object_id){self.selected=index;self.clear_selection();}
-                            self.progress=issue.index+1;self.show_quality=true;
-                            self.pan=Vec2::new(-issue.point.x as f32*self.scale,-issue.point.y as f32*self.scale);self.fit=false;
+    }
+
+    pub(super) fn underlay_parameters(&mut self, ui: &mut egui::Ui) {
+        if self.stitch_only || self.selected_locked() {
+            return;
+        }
+        let language = self.language;
+        let rail_satin = self
+            .project
+            .objects
+            .get(self.selected)
+            .is_some_and(|o| o.satin_column.is_some());
+        let tatami = self
+            .project
+            .objects
+            .get(self.selected)
+            .is_some_and(|o| o.settings.kind == StitchKind::Tatami);
+        if rail_satin || tatami {
+            ui.collapsing(language.text("Additional underlay"), |ui| {
+                let before = self.project.objects[self.selected].clone();
+                let before_version = self.project.version;
+                let mut changed = false;
+                let s = &mut self.project.objects[self.selected].settings;
+                changed |= ui
+                    .checkbox(&mut s.edge_underlay, language.text("Edgewalk underlay"))
+                    .changed();
+                if rail_satin {
+                    changed |= ui
+                        .checkbox(&mut s.zigzag_underlay, language.text("Zigzag underlay"))
+                        .changed();
+                }
+                if tatami {
+                    let mut automatic = s.underlay_angle_deg.is_none();
+                    if ui
+                        .checkbox(
+                            &mut automatic,
+                            language.text("Underlay follows top angle + 90°"),
+                        )
+                        .changed()
+                    {
+                        s.underlay_angle_deg =
+                            (!automatic).then_some((s.angle_deg + 90.).rem_euclid(180.));
+                        changed = true;
+                    }
+                    if let Some(angle) = &mut s.underlay_angle_deg {
+                        ui.label(language.text("Underlay angle (°)"));
+                        changed |= ui
+                            .add(egui::DragValue::new(angle).speed(1.).range(-180. ..=180.))
+                            .changed();
+                    }
+                }
+                ui.label(language.text("Underlay inset (mm)"));
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut s.underlay_inset_mm)
+                            .speed(0.05)
+                            .range(0. ..=5.),
+                    )
+                    .changed();
+                ui.label(language.text("Underlay spacing (mm)"));
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut s.underlay_spacing_mm)
+                            .speed(0.1)
+                            .range(0.3..=20.),
+                    )
+                    .changed();
+                ui.label(language.text("Underlay stitch length (mm)"));
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut s.underlay_length_mm)
+                            .speed(0.1)
+                            .range(0.3..=12.),
+                    )
+                    .changed();
+                if changed {
+                    self.project.version = self
+                        .project
+                        .version
+                        .max(if s.underlay_angle_deg.is_some() { 5 } else { 4 });
+                    self.record_object_field_edit(before, before_version);
+                }
+            });
+        }
+    }
+
+    pub(super) fn quality_controls(&mut self, ui: &mut egui::Ui) {
+        let language = self.language;
+        ui.checkbox(
+            &mut self.show_quality,
+            language.text("Highlight stitch warnings"),
+        );
+        ui.checkbox(
+            &mut self.show_segment_density,
+            language.text("Thread segment density"),
+        );
+        if !self.stale
+            && let Some(report) = &self.segment_density
+        {
+            let max = report
+                .cells
+                .iter()
+                .map(|c| c.total_mm / (report.grid_mm * report.grid_mm))
+                .fold(0., f64::max);
+            ui.small(format!(
+                "{}: {:.2} mm/mm²",
+                language.text("Maximum segment length density"),
+                max
+            ));
+            if !report.complete {
+                ui.small(language.text("Segment density is partial: work limit reached."));
+            }
+        }
+        if !self.stale {
+            if let Some(summary) = &self.plan_summary {
+                ui.small(format!(
+                    "{}: {:.1} mm · {}: {:.1} mm",
+                    language.text("Top fill"),
+                    summary.top_mm,
+                    language.text("Underlay"),
+                    summary.underlay_mm
+                ));
+                ui.small(format!(
+                    "{}: {:.1} mm · Jump: {:.1} mm · Trim: {}",
+                    language.text("Sewn travel"),
+                    summary.sewn_travel_mm,
+                    summary.jump_mm,
+                    summary.trim_count
+                ));
+            }
+            for estimate in self.coverage.iter().take(30) {
+                if estimate.samples > 0 {
+                    ui.small(format!(
+                        "#{} · {}: {:.1}% ({} {:.2} mm)",
+                        estimate.object_id,
+                        language.text("Top thread coverage estimate"),
+                        100. * (estimate.samples - estimate.uncovered_samples) as f64
+                            / estimate.samples as f64,
+                        language.text("thread width"),
+                        estimate.effective_thread_width_mm
+                    ));
+                }
+            }
+            let warnings: Vec<_> = self
+                .plan_warnings
+                .iter()
+                .filter(|w| w.point.is_none())
+                .chain(self.plan_warnings.iter().filter(|w| w.point.is_some()))
+                .take(100)
+                .cloned()
+                .collect();
+            if !warnings.is_empty() {
+                ui.small(format!(
+                    "{}: {} ({}: {})",
+                    language.text("Plan warnings"),
+                    self.plan_warnings.len(),
+                    language.text("shown"),
+                    warnings.len()
+                ));
+            }
+            egui::ScrollArea::vertical()
+                .id_salt("plan-warnings")
+                .max_height(160.)
+                .show(ui, |ui| {
+                    for warning in &warnings {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(format!(
+                                        "#{} · {}",
+                                        warning.object_id,
+                                        language.message(&warning.message)
+                                    ))
+                                    .small(),
+                                )
+                                .wrap(),
+                            )
+                            .clicked()
+                        {
+                            if let Some(index) = self
+                                .project
+                                .objects
+                                .iter()
+                                .position(|o| o.id == warning.object_id)
+                            {
+                                self.selected = index;
+                                self.clear_selection();
+                            }
+                            self.show_quality = true;
+                            if let Some(point) = warning.point {
+                                self.pan = Vec2::new(
+                                    -point.x as f32 * self.scale,
+                                    -point.y as f32 * self.scale,
+                                );
+                                self.fit = false;
+                            }
                         }
                     }
                 });
-            }
-        });
+        }
+
+        ui.small(language.text("Heuristic checks: stitches below 0.3 mm, jumps above 10 mm, more than 20 punctures per 1 mm² cell."));
+        if self.stale {
+            ui.label(language.text("Generate stitches to refresh quality checks."));
+        } else {
+            let total = self.quality_issues.len();
+            let issues: Vec<_> = self.quality_issues.iter().take(100).cloned().collect();
+            ui.label(format!("{}: {}", language.text("Warnings"), total));
+            egui::ScrollArea::vertical()
+                .max_height(130.)
+                .show(ui, |ui| {
+                    for issue in issues.iter().take(100) {
+                        let label = match issue.kind {
+                            embroidery_lab::quality::QualityKind::ShortStitch => "Short stitch",
+                            embroidery_lab::quality::QualityKind::LongJump => "Long jump",
+                            embroidery_lab::quality::QualityKind::DenseArea => "Dense area",
+                            embroidery_lab::quality::QualityKind::LongStitch => "Long stitch",
+                            embroidery_lab::quality::QualityKind::EmptyObject => {
+                                "Object has no top stitches"
+                            }
+                            embroidery_lab::quality::QualityKind::OutsideGeometry => {
+                                "Stitch crosses protected geometry"
+                            }
+                            embroidery_lab::quality::QualityKind::UncoveredArea => {
+                                "Area has insufficient top coverage"
+                            }
+                            embroidery_lab::quality::QualityKind::UnsupportedSatin => {
+                                "Satin requires valid rails"
+                            }
+                            embroidery_lab::quality::QualityKind::SkippedUnderlay => {
+                                "Underlay omitted"
+                            }
+                            embroidery_lab::quality::QualityKind::AnalysisLimit => {
+                                "Diagnostic work limit reached"
+                            }
+                            embroidery_lab::quality::QualityKind::MachineLimit => {
+                                "Machine limit exceeded"
+                            }
+                            embroidery_lab::quality::QualityKind::SmallFeature => {
+                                "Detail below machine resolution"
+                            }
+                            embroidery_lab::quality::QualityKind::RepeatedTopFill => {
+                                "Repeated top-fill segment"
+                            }
+                            embroidery_lab::quality::QualityKind::LayerOcclusion => {
+                                "Hidden lower fill removed"
+                            }
+                            embroidery_lab::quality::QualityKind::TravelRouting => {
+                                "Travel redirected to jump"
+                            }
+                        };
+                        if ui
+                            .small_button(format!("{} · {}", language.text(label), issue.index + 1))
+                            .clicked()
+                        {
+                            if let Some(index) = self
+                                .project
+                                .objects
+                                .iter()
+                                .position(|o| o.id == issue.object_id)
+                            {
+                                self.selected = index;
+                                self.clear_selection();
+                            }
+                            self.progress = issue.index + 1;
+                            self.show_quality = true;
+                            self.pan = Vec2::new(
+                                -issue.point.x as f32 * self.scale,
+                                -issue.point.y as f32 * self.scale,
+                            );
+                            self.fit = false;
+                        }
+                    }
+                });
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn locked_geometry_handlers_cannot_replace_split_or_hide_the_source() {
+        let column = SatinColumn {
+            left: vec![Point::new(0., 0.), Point::new(0., 20.)],
+            right: vec![Point::new(4., 0.), Point::new(4., 20.)],
+            ..Default::default()
+        };
+        let mut app = Editor::workspace();
+        app.project = Project {
+            version: 4,
+            objects: vec![Object {
+                id: 42,
+                satin_column: Some(column.clone()),
+                settings: Settings {
+                    kind: StitchKind::Satin,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        app.selected = 0;
+        app.locked_objects.insert(42);
+        app.draft = vec![Point::new(-1., 10.), Point::new(5., 10.)];
+        let before = app.project.clone();
+        let mut branch_action_ran = false;
+        app.edit_branch(|object| {
+            branch_action_ran = true;
+            object.color = [255, 0, 0];
+            Ok(())
+        });
+        app.split_column();
+        app.convert_branch(0);
+        app.complete_region_split();
+        assert!(app.commit_column(column, true).is_err());
+        assert!(!branch_action_ran);
+        assert!(project_equal(&app.project, &before));
+        assert!(app.undo.is_empty() && !app.dirty && !app.error);
+        assert_eq!(app.draft.len(), 2, "A blocked edit preserves its draft");
+
+        app.locked_objects.remove(&42);
+        app.split_column();
+        assert!(!app.error, "{}", app.message);
+        assert_eq!(app.project.objects.len(), 2);
+        assert_eq!(app.undo.len(), 1);
+        app.undo_edit();
+        assert!(project_equal(&app.project, &before));
+    }
     #[test]
     fn converting_a_branch_with_full_history_is_one_atomic_edit() {
         let mut app = Editor::workspace();

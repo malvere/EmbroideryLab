@@ -1,0 +1,101 @@
+[
+  {
+    "repo": "AccessKit/accesskit",
+    "commit": "0b6901a8c8e6fb1cb5a2dc7c19dc7bee1cc5ad09",
+    "tree_url": "https://api.github.com/repos/AccessKit/accesskit/git/trees/0b6901a8c8e6fb1cb5a2dc7c19dc7bee1cc5ad09?recursive=1",
+    "paths": [
+      "LICENSE-APACHE",
+      "LICENSE-MIT",
+      "LICENSE.chromium"
+    ]
+  },
+  {
+    "repo": "AccessKit/accesskit",
+    "commit": "5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3",
+    "tree_url": "https://api.github.com/repos/AccessKit/accesskit/git/trees/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3?recursive=1",
+    "paths": [
+      "LICENSE-APACHE",
+      "LICENSE-MIT",
+      "LICENSE.chromium"
+    ]
+  },
+  {
+    "repo": "emilk/egui",
+    "commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+    "tree_url": "https://api.github.com/repos/emilk/egui/git/trees/44cdd653e2317d300fb8a6c9c36b03f23991e803?recursive=1",
+    "paths": [
+      "LICENSE-APACHE",
+      "LICENSE-MIT"
+    ]
+  },
+  {
+    "repo": "jbuckmccready/cavalier_contours",
+    "commit": "22887a824d22cd8ab50968a551f34cdb4508127f",
+    "tree_url": "https://api.github.com/repos/jbuckmccready/cavalier_contours/git/trees/22887a824d22cd8ab50968a551f34cdb4508127f?recursive=1",
+    "paths": [
+      "LICENSE-APACHE",
+      "LICENSE-MIT"
+    ]
+  },
+  {
+    "repo": "DoumanAsh/clipboard-win",
+    "commit": "ed27008ae5d1f10cfbb266de039f0fb35fd05a56",
+    "tree_url": "https://api.github.com/repos/DoumanAsh/clipboard-win/git/trees/ed27008ae5d1f10cfbb266de039f0fb35fd05a56?recursive=1",
+    "paths": [
+      "LICENSE"
+    ]
+  },
+  {
+    "repo": "georust/geo",
+    "commit": "daf0515b0317b93480020a8cfb1dc7b46a4526ad",
+    "tree_url": "https://api.github.com/repos/georust/geo/git/trees/daf0515b0317b93480020a8cfb1dc7b46a4526ad?recursive=1",
+    "paths": [
+      "LICENSE-APACHE",
+      "LICENSE-MIT",
+      "jts-test-runner/resources/LICENSE_EDLv1.txt",
+      "jts-test-runner/resources/LICENSE_EPLv2.txt"
+    ]
+  },
+  {
+    "repo": "brendanzab/gl-rs",
+    "commit": "ea503e8d5fb6d73c6030e6191ce738cd3bf3433e",
+    "tree_url": "https://api.github.com/repos/brendanzab/gl-rs/git/trees/ea503e8d5fb6d73c6030e6191ce738cd3bf3433e?recursive=1",
+    "paths": [
+      "LICENSE"
+    ]
+  },
+  {
+    "repo": "brendanzab/gl-rs",
+    "commit": "f150967b1c44ae888e6676f93f639ebc82771bdc",
+    "tree_url": "https://api.github.com/repos/brendanzab/gl-rs/git/trees/f150967b1c44ae888e6676f93f639ebc82771bdc?recursive=1",
+    "paths": [
+      "LICENSE"
+    ]
+  },
+  {
+    "repo": "iShape-Rust/iOverlay",
+    "commit": "a071220dfc6095edb82426b880a4019db3ea67b5",
+    "tree_url": "https://api.github.com/repos/iShape-Rust/iOverlay/git/trees/a071220dfc6095edb82426b880a4019db3ea67b5?recursive=1",
+    "paths": [
+      "LICENSE"
+    ]
+  },
+  {
+    "repo": "aclysma/profiling",
+    "commit": "8271551172eb6fa4cba47369aedd93790c623df9",
+    "tree_url": "https://api.github.com/repos/aclysma/profiling/git/trees/8271551172eb6fa4cba47369aedd93790c623df9?recursive=1",
+    "paths": [
+      "LICENSE-APACHE",
+      "LICENSE-MIT"
+    ]
+  },
+  {
+    "repo": "georust/rstar",
+    "commit": "c8c5bf9e41468281d030869d409e3f67f1aaf5b7",
+    "tree_url": "https://api.github.com/repos/georust/rstar/git/trees/c8c5bf9e41468281d030869d409e3f67f1aaf5b7?recursive=1",
+    "paths": [
+      "LICENSE-APACHE",
+      "LICENSE-MIT"
+    ]
+  }
+]

@@ -58,12 +58,32 @@ fn append_record(dx: i32, dy: i32, command: Command, body: &mut Vec<u8>) {
             }
         }
         Command::ColorChange => record[2] = 0xc3,
+        Command::Trim => unreachable!("Trim is expanded by the selected DST profile"),
         Command::End => record[2] = 0xf3,
     }
     body.extend_from_slice(&record);
 }
 
 pub fn encode(stitches: &[Stitch], name: &str) -> Result<Vec<u8>, String> {
+    encode_with_trim(stitches, name, TrimEncoding::ThreeJump)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TrimEncoding {
+    /// Conventional three stationary jumps; machine interpretation must be tested.
+    #[default]
+    ThreeJump,
+    /// Retain the uncut thread. Only use when explicitly chosen by the operator.
+    KeepThread,
+}
+
+pub fn encode_with_trim(
+    stitches: &[Stitch],
+    name: &str,
+    trim: TrimEncoding,
+) -> Result<Vec<u8>, String> {
+    let normalized = crate::commands::normalize(stitches)?;
+    let stitches = &normalized;
     if stitches.len() > 1_000_000 {
         return Err("Design exceeds one million commands".into());
     }
@@ -75,6 +95,14 @@ pub fn encode(stitches: &[Stitch], name: &str) -> Result<Vec<u8>, String> {
     for (index, stitch) in stitches.iter().enumerate() {
         if ended {
             return Err(format!("Command {index} occurs after END"));
+        }
+        if stitch.command == Command::Trim {
+            if trim == TrimEncoding::ThreeJump {
+                for _ in 0..3 {
+                    append_record(0, 0, Command::Jump, &mut body);
+                }
+            }
+            continue;
         }
         if !stitch.x.is_finite()
             || !stitch.y.is_finite()
@@ -205,6 +233,17 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Stitch>, String> {
         current.0 += decode_axis(record, &X_BITS)?;
         current.1 -= decode_axis(record, &Y_BITS)?;
         if command == Command::ColorChange {
+            let point = Point::new(f64::from(current.0) / 10.0, f64::from(current.1) / 10.0);
+            let previous = result.last().map_or(Point::default(), |s| s.point());
+            if point.distance(previous) > 1e-9 {
+                result.push(Stitch {
+                    x: point.x,
+                    y: point.y,
+                    command: Command::Jump,
+                    color: PALETTE[color % PALETTE.len()],
+                    object_id: color as u64,
+                });
+            }
             color += 1;
         }
         result.push(Stitch {
@@ -227,6 +266,7 @@ pub struct Stats {
     pub stitches: usize,
     pub jumps: usize,
     pub color_changes: usize,
+    pub trims: usize,
     pub width_mm: f64,
     pub height_mm: f64,
     pub sewn_width_mm: f64,
@@ -236,14 +276,12 @@ pub struct Stats {
     pub max_stitch_mm: f64,
 }
 pub fn stats(stitches: &[Stitch]) -> Stats {
-    let mut out = Stats {
-        commands: stitches.len(),
-        ..Stats::default()
-    };
+    let mut out = Stats::default();
     let mut previous = Point::default();
     let mut bounds: Option<(f64, f64, f64, f64)> = None;
     let mut sewn: Option<(f64, f64, f64, f64)> = None;
     for &s in stitches {
+        out.commands += 1;
         let p = s.point();
         let distance = p.distance(previous);
         match s.command {
@@ -272,7 +310,8 @@ pub fn stats(stitches: &[Stitch]) -> Stats {
                 out.jump_length_mm += distance;
             }
             Command::ColorChange => out.color_changes += 1,
-            Command::End => {}
+            Command::Trim => out.trims += 1,
+            Command::End => break,
         }
         if matches!(s.command, Command::Stitch | Command::Jump) {
             bounds = Some(match bounds {

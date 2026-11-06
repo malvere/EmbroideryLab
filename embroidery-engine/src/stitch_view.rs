@@ -2,6 +2,7 @@ use super::*;
 
 impl Editor {
     pub(super) fn update_stitch_view(&mut self) {
+        self.canvas_scene = None;
         self.stitch_count = self
             .stitches
             .iter()
@@ -15,7 +16,7 @@ impl Editor {
         self.stitch_bounds = stitch_metrics::stitched_bounds(&self.stitches);
         self.stitch_revision = self.stitch_revision.wrapping_add(1);
         self.preview_3d
-            .set_stitches(&self.stitches, self.stitch_revision);
+            .set_plan(&self.stitches, &self.plan_metadata, self.stitch_revision);
     }
 
     pub(super) fn set_3d_view(&mut self, enabled: bool) {
@@ -78,7 +79,7 @@ impl Editor {
         }
         if let Some(error) = self.preview_3d.error() {
             ui.colored_label(
-                Color32::from_rgb(161, 43, 50),
+                ui.visuals().error_fg_color,
                 language.message(&error).as_ref(),
             );
         }

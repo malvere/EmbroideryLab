@@ -39,7 +39,7 @@ pub(super) fn stitched_bounds(stitches: &[Stitch]) -> Option<StitchBounds> {
     let mut bounds: Option<StitchBounds> = None;
     for stitch in stitches {
         match stitch.command {
-            Command::Stitch | Command::Jump | Command::ColorChange => {
+            Command::Stitch | Command::Jump | Command::ColorChange | Command::Trim => {
                 let point = stitch.point();
                 if !point.x.is_finite() || !point.y.is_finite() {
                     // Do not invent a segment across malformed positional data.

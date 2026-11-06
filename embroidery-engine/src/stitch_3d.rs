@@ -93,11 +93,20 @@ impl Preview3d {
     }
 
     pub fn set_stitches(&mut self, stitches: &[Stitch], revision: u64) {
+        self.set_plan(stitches, &[], revision);
+    }
+
+    pub fn set_plan(
+        &mut self,
+        stitches: &[Stitch],
+        metadata: &[embroidery_lab::CommandMeta],
+        revision: u64,
+    ) {
         if self.revision == Some(revision) {
             return;
         }
         self.revision = Some(revision);
-        match build_scene(stitches, revision) {
+        match build_scene_with_metadata(stitches, metadata, revision) {
             Ok(scene) => {
                 self.scene = Arc::new(scene);
                 self.source_error = None;
@@ -305,11 +314,13 @@ fn positional_segments(stitches: &[Stitch]) -> Result<Vec<(usize, Stitch, [f64; 
     for (index, stitch) in stitches.iter().copied().enumerate() {
         match stitch.command {
             Command::End => break,
-            Command::ColorChange | Command::Jump | Command::Stitch => {
+            Command::ColorChange | Command::Trim | Command::Jump | Command::Stitch => {
                 if !stitch.x.is_finite() || !stitch.y.is_finite() {
                     return Err("3D preview cannot display non-finite stitch coordinates.".into());
                 }
-                if stitch.command != Command::ColorChange && previous != [stitch.x, stitch.y] {
+                if matches!(stitch.command, Command::Stitch | Command::Jump)
+                    && previous != [stitch.x, stitch.y]
+                {
                     segments.push((index, stitch, previous));
                 }
                 previous = [stitch.x, stitch.y];
@@ -319,7 +330,16 @@ fn positional_segments(stitches: &[Stitch]) -> Result<Vec<(usize, Stitch, [f64; 
     Ok(segments)
 }
 
+#[cfg(test)]
 fn build_scene(stitches: &[Stitch], revision: u64) -> Result<Scene, String> {
+    build_scene_with_metadata(stitches, &[], revision)
+}
+
+fn build_scene_with_metadata(
+    stitches: &[Stitch],
+    metadata: &[embroidery_lab::CommandMeta],
+    revision: u64,
+) -> Result<Scene, String> {
     let segments = positional_segments(stitches)?;
     let sewn: Vec<_> = segments
         .iter()
@@ -380,6 +400,7 @@ fn build_scene(stitches: &[Stitch], revision: u64) -> Result<Scene, String> {
     };
     let cell_mm = longest / 768.;
     for (index, stitch, start) in segments {
+        let pass_id = metadata.get(index).map_or(0, |meta| meta.pass_id);
         let a = [
             (start[0] - center[0]) as f32,
             -(start[1] - center[1]) as f32,
@@ -399,7 +420,8 @@ fn build_scene(stitches: &[Stitch], revision: u64) -> Result<Scene, String> {
                     a[0] + (b[0] - a[0]) * fraction,
                     a[1] + (b[1] - a[1]) * fraction,
                 );
-                if owners[cell].is_some_and(|key| key != (stitch.object_id, stitch.color)) {
+                if owners[cell].is_some_and(|key| key != (stitch.object_id, stitch.color, pass_id))
+                {
                     layer = layer.max(heights[cell].saturating_add(1).min(5));
                 } else {
                     layer = layer.max(heights[cell]);
@@ -411,7 +433,7 @@ fn build_scene(stitches: &[Stitch], revision: u64) -> Result<Scene, String> {
                     a[0] + (b[0] - a[0]) * fraction,
                     a[1] + (b[1] - a[1]) * fraction,
                 );
-                owners[cell] = Some((stitch.object_id, stitch.color));
+                owners[cell] = Some((stitch.object_id, stitch.color, pass_id));
                 heights[cell] = layer;
                 shadow[cell] = 255;
             }
@@ -1140,6 +1162,7 @@ uniform float u_diameter;
 uniform int u_mode;
 out vec3 v_world;
 out vec3 v_normal;
+out vec3 v_tangent;
 out vec4 v_color;
 out vec2 v_uv;
 out float v_length;
@@ -1147,6 +1170,7 @@ void main() {
     if (u_mode == 0) {
         v_world=vec3((a_mesh-0.5)*u_board,-0.12);
         v_normal=vec3(0.0,0.0,1.0);
+        v_tangent=vec3(1.0,0.0,0.0);
         v_color=vec4(1.0);
         v_uv=a_mesh;
         v_length=0.0;
@@ -1160,6 +1184,7 @@ void main() {
         vec2 delta=a_end.xy-a_start.xy;
         float len=max(length(delta),0.00001);
         vec3 tangent=normalize(vec3(delta, radius*0.9*3.14159265*cos(3.14159265*t)));
+        v_tangent=tangent;
         vec3 side=vec3(-delta.y/len,delta.x/len,0.0);
         vec3 up=normalize(cross(tangent,side));
         v_normal=normalize(side*sin(angle)+up*cos(angle));
@@ -1177,6 +1202,7 @@ void main() {
 const FRAGMENT_SHADER: &str = r#"#version 330 core
 in vec3 v_world;
 in vec3 v_normal;
+in vec3 v_tangent;
 in vec4 v_color;
 in vec2 v_uv;
 in float v_length;
@@ -1208,7 +1234,10 @@ void main() {
         vec3 view=normalize(u_eye-v_world);
         vec3 half_vector=normalize(light+view);
         float diffuse=max(dot(normal,light),0.0);
-        float sheen=pow(max(dot(normal,half_vector),0.0),38.0)*0.32;
+        float along=dot(normalize(v_tangent),half_vector);
+        float across=sqrt(max(0.0,1.0-along*along));
+        float sheen=pow(across,28.0)*pow(max(dot(normal,half_vector),0.0),6.0)*0.16;
+        sheen+=pow(max(dot(normal,half_vector),0.0),38.0)*0.07;
         float fiber=sin(v_uv.y*12.0+v_uv.x*v_length*70.0)*0.012;
         vec3 color=v_color.rgb*(0.54+0.46*diffuse+fiber)+vec3(sheen);
         out_color=vec4(color,1.0);

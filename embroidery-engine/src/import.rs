@@ -6,8 +6,13 @@ use std::{collections::BTreeMap, path::Path};
 
 #[path = "raster_options.rs"]
 mod raster_options;
+#[path = "svg_import.rs"]
+mod svg_import;
 pub use raster_options::{
-    BackgroundMode, RasterOptions, load_image_with_options, load_pixels_with_options,
+    BackgroundMode, MAX_OMITTED_REGION_DETAILS, OmittedRegion, PREPARATION_VERSION,
+    PreparationMode, RasterOptions, RasterTraceReport, decode_raster_file, load_image_with_options,
+    load_pixels_with_options, load_pixels_with_report, load_pixels_with_report_cancellable,
+    load_pixels_with_source_report_cancellable,
 };
 
 fn name(path: &Path) -> String {
@@ -25,13 +30,6 @@ fn validate_width(width: f64) -> Result<(), String> {
 }
 fn rgb_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
-}
-fn nearest(color: [f64; 3], palette: &[[f64; 3]]) -> usize {
-    palette
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| rgb_distance(color, **a).total_cmp(&rgb_distance(color, **b)))
-        .map_or(0, |(i, _)| i)
 }
 
 /// Simplify a closed ring with deterministic Ramer–Douglas–Peucker.
@@ -174,255 +172,56 @@ fn trace_region(pixels: &[(usize, usize)], member: &[bool], w: usize, h: usize) 
             }
         }
         if complete && ring.len() >= 3 {
-            rings.push(ring);
+            // Four-connected raster regions can have diagonal void contacts.
+            // Their boundary is a closed walk which revisits a grid vertex,
+            // not a simple polygon ring. Decompose it into simple cycles while
+            // retaining every original directed edge and even-odd occupancy.
+            // A hull, epsilon offset or dropped loop would change the artwork.
+            if let Some(cycles) = split_grid_walk(&ring) {
+                rings.extend(cycles);
+            } else {
+                // Retain an uncertifiable walk for the explicit geometry
+                // diagnostic rather than silently dropping a boundary.
+                rings.push(ring);
+            }
         }
     }
     rings
+}
+
+fn split_grid_walk(ring: &[Point]) -> Option<Vec<Vec<Point>>> {
+    let mut path = Vec::<Grid>::new();
+    let mut positions = BTreeMap::<Grid, usize>::new();
+    let mut cycles = Vec::new();
+    for point in ring.iter().chain(ring.first()) {
+        let vertex = (point.x as i32, point.y as i32);
+        if let Some(&start) = positions.get(&vertex) {
+            if path.len() - start < 3 {
+                return None;
+            }
+            cycles.push(
+                path[start..]
+                    .iter()
+                    .map(|&(x, y)| Point::new(f64::from(x), f64::from(y)))
+                    .collect(),
+            );
+            for old in &path[start + 1..] {
+                positions.remove(old);
+            }
+            path.truncate(start + 1);
+        } else {
+            positions.insert(vertex, path.len());
+            path.push(vertex);
+        }
+    }
+    (path.len() == 1 && !cycles.is_empty()).then_some(cycles)
 }
 
 pub fn load_image(path: &Path, width_mm: f64) -> Result<Project, String> {
     load_image_with_options(path, width_mm, &RasterOptions::default())
 }
 pub fn load_svg(path: &Path, width_mm: f64) -> Result<Project, String> {
-    validate_width(width_mm)?;
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    if bytes.len() > 20_000_000 {
-        return Err("SVG exceeds 20MB import limit".into());
-    }
-    let text =
-        std::str::from_utf8(&bytes).map_err(|_| "SVG import requires uncompressed UTF-8 XML")?;
-    let xml = roxmltree::Document::parse(text).map_err(|e| e.to_string())?;
-    if xml
-        .descendants()
-        .any(|n| n.is_element() && matches!(n.tag_name().name(), "text" | "image" | "use"))
-    {
-        return Err("SVG text, embedded images and reused symbols must be converted to explicit flat paths first".into());
-    }
-    let tree =
-        usvg::Tree::from_data(&bytes, &usvg::Options::default()).map_err(|e| e.to_string())?;
-    let scale = width_mm / f64::from(tree.size().width());
-    let mut objects = Vec::new();
-    let mut unsupported = Vec::new();
-    fn walk(
-        group: &usvg::Group,
-        scale: f64,
-        objects: &mut Vec<Object>,
-        unsupported: &mut Vec<String>,
-        node_budget: &mut usize,
-    ) {
-        use usvg::tiny_skia_path::PathSegment;
-        for node in group.children() {
-            if *node_budget >= 100_000 || objects.len() >= 4096 {
-                unsupported.push("SVG geometry complexity limit".into());
-                return;
-            }
-            match node {
-                usvg::Node::Group(g) => {
-                    if g.opacity().get() < 0.999 || g.blend_mode() != usvg::BlendMode::Normal {
-                        unsupported.push("group opacity or blend mode".into());
-                    }
-                    if g.clip_path().is_some() || g.mask().is_some() || !g.filters().is_empty() {
-                        unsupported.push("clipping, masks or filters".into());
-                    }
-                    walk(g, scale, objects, unsupported, node_budget);
-                }
-                usvg::Node::Path(path) => {
-                    if !path.is_visible() {
-                        continue;
-                    }
-                    let (color, kind) = if let Some(fill) = path.fill() {
-                        if fill.opacity().get() < 0.999 {
-                            unsupported.push("partial opacity".into());
-                        }
-                        if path.stroke().is_some() {
-                            unsupported.push("combined fill and stroke".into());
-                        }
-                        match fill.paint() {
-                            usvg::Paint::Color(c) => ([c.red, c.green, c.blue], StitchKind::Tatami),
-                            _ => {
-                                unsupported.push("gradient or pattern fill".into());
-                                continue;
-                            }
-                        }
-                    } else if path.stroke().is_some() {
-                        unsupported.push("stroke-only paths (convert stroke to outline)".into());
-                        continue;
-                    } else {
-                        continue;
-                    };
-                    let Some(data) = path.data().clone().transform(path.abs_transform()) else {
-                        continue;
-                    };
-                    let mut rings = Vec::new();
-                    let mut ring = Vec::new();
-                    let mut current = Point::default();
-                    let mut start = Point::default();
-                    let convert = |p: usvg::tiny_skia_path::Point| {
-                        Point::new(f64::from(p.x) * scale, f64::from(p.y) * scale)
-                    };
-                    for segment in data.segments() {
-                        let starts_contour = matches!(&segment, PathSegment::MoveTo(_));
-                        let before = ring.len();
-                        match segment {
-                            PathSegment::MoveTo(p) => {
-                                if ring.len() >= 3 {
-                                    rings.push(std::mem::take(&mut ring));
-                                } else {
-                                    ring.clear();
-                                }
-                                current = convert(p);
-                                start = current;
-                                ring.push(current);
-                            }
-                            PathSegment::LineTo(p) => {
-                                current = convert(p);
-                                ring.push(current);
-                            }
-                            PathSegment::QuadTo(c, e) => {
-                                let c = convert(c);
-                                let e = convert(e);
-                                let curve = CubicBezier {
-                                    start: current,
-                                    control1: current.lerp(c, 2. / 3.),
-                                    control2: e.lerp(c, 2. / 3.),
-                                    end: e,
-                                };
-                                ring.extend(curve.flatten(0.03).into_iter().skip(1));
-                                current = e;
-                            }
-                            PathSegment::CubicTo(c1, c2, e) => {
-                                let e = convert(e);
-                                let curve = CubicBezier {
-                                    start: current,
-                                    control1: convert(c1),
-                                    control2: convert(c2),
-                                    end: e,
-                                };
-                                ring.extend(curve.flatten(0.03).into_iter().skip(1));
-                                current = e;
-                            }
-                            PathSegment::Close => {
-                                if ring.last() == Some(&start) {
-                                    ring.pop();
-                                }
-                                if ring.len() >= 3 {
-                                    rings.push(std::mem::take(&mut ring));
-                                }
-                                current = start;
-                            }
-                        }
-                        *node_budget += if starts_contour {
-                            1
-                        } else {
-                            ring.len().saturating_sub(before)
-                        };
-                        if *node_budget > 100_000 {
-                            unsupported.push("SVG exceeds 100,000 flattened nodes".into());
-                            return;
-                        }
-                    }
-                    if ring.len() >= 3 {
-                        rings.push(ring);
-                    }
-                    if rings.is_empty() {
-                        continue;
-                    }
-                    if path
-                        .fill()
-                        .is_some_and(|f| f.rule() == usvg::FillRule::NonZero)
-                    {
-                        if rings.len() > 256 {
-                            unsupported.push("nonzero path exceeds 256 subpaths".into());
-                            return;
-                        }
-                        fn contains(p: Point, r: &[Point]) -> bool {
-                            let mut inside = false;
-                            for (a, b) in r.iter().zip(r.iter().cycle().skip(1)).take(r.len()) {
-                                if (a.y > p.y) != (b.y > p.y)
-                                    && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x
-                                {
-                                    inside = !inside;
-                                }
-                            }
-                            inside
-                        }
-                        let signs: Vec<i32> = rings
-                            .iter()
-                            .map(|r| {
-                                let area = r
-                                    .iter()
-                                    .zip(r.iter().cycle().skip(1))
-                                    .take(r.len())
-                                    .map(|(a, b)| a.x * b.y - b.x * a.y)
-                                    .sum::<f64>();
-                                if area >= 0. { 1 } else { -1 }
-                            })
-                            .collect();
-                        // For nested nonzero rings, keep only occupancy boundaries;
-                        // same-winding nested contours are solid, not holes.
-                        let keep: Vec<bool> = rings
-                            .iter()
-                            .enumerate()
-                            .map(|(i, r)| {
-                                let before = rings
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(j, other)| *j != i && contains(r[0], other))
-                                    .map(|(j, _)| signs[j])
-                                    .sum::<i32>();
-                                (before == 0) != (before + signs[i] == 0)
-                            })
-                            .collect();
-                        rings = rings
-                            .into_iter()
-                            .zip(keep)
-                            .filter_map(|(r, keep)| keep.then_some(r))
-                            .collect();
-                        if rings.is_empty() {
-                            continue;
-                        }
-                    }
-                    let id = objects.len() as u64 + 1;
-                    let settings = Settings {
-                        kind,
-                        underlay: kind != StitchKind::Running,
-                        ..Settings::default()
-                    };
-                    objects.push(Object {
-                        id,
-                        name: if path.id().is_empty() {
-                            format!("SVG path {id}")
-                        } else {
-                            path.id().into()
-                        },
-                        contours: rings,
-                        color,
-                        settings,
-                        ..Object::default()
-                    });
-                }
-                _ => unsupported.push("text or embedded raster image".into()),
-            }
-        }
-    }
-    walk(tree.root(), scale, &mut objects, &mut unsupported, &mut 0);
-    if !unsupported.is_empty() {
-        unsupported.sort();
-        unsupported.dedup();
-        return Err(format!(
-            "SVG contains unsupported {}; convert text/strokes to flat solid outlines first",
-            unsupported.join(", ")
-        ));
-    }
-    if objects.is_empty() {
-        return Err("SVG contains no supported solid vector paths".into());
-    }
-    Ok(Project {
-        name: name(path),
-        objects,
-        width_mm,
-        ..Project::default()
-    })
+    svg_import::load(path, width_mm)
 }
 
 /// Dispatch import of an editable project, raster artwork or SVG.
@@ -436,12 +235,12 @@ pub fn load(path: &Path, width_mm: f64) -> Result<Project, String> {
     {
         "svg" => load_svg(path, width_mm),
         "json" | "elab" => Project::load(path),
-        "png" | "jpg" | "jpeg" => load_image(path, width_mm),
+        "png" | "jpg" | "jpeg" | "webp" => load_image(path, width_mm),
         "pdf" => {
             let page = crate::pdf_import::render_page(path, 0, 2048)?;
             load_pixels_with_options(&page.image, path, width_mm, &RasterOptions::default())
         }
-        _ => Err("Supported editable inputs: JPEG, PNG, PDF, SVG, ELAB/JSON".into()),
+        _ => Err("Supported editable inputs: JPEG, PNG, WebP, PDF, SVG, ELAB/JSON".into()),
     }
 }
 

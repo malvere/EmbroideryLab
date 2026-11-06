@@ -52,27 +52,41 @@ fn render(stitches: &[embroidery_lab::Stitch], path: &Path) -> Result<(), String
     write(path, svg)
 }
 fn output(project: &Project, path: &Path) -> Result<(), String> {
-    let stitches = engine::generate(project)?;
+    let plan = engine::generate_plan(project)?;
+    let stitches = &plan.stitches;
     let is_dsb = path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("dsb"));
     let (bytes, decoded) = if is_dsb {
-        let records = dsb::from_stitches(&stitches)?;
+        let records = dsb::from_stitches(stitches)?;
         let bytes = dsb::encode(&records, &project.name)?;
         let decoded = dsb::preview(&dsb::decode(&bytes)?)?;
         (bytes, decoded)
     } else {
-        let bytes = dst::encode(&stitches, &project.name)?;
+        let bytes = dst::encode_with_trim(
+            stitches,
+            &project.name,
+            project.machine_profile.dst_trim_encoding,
+        )?;
         let decoded = dst::decode(&bytes)?;
         (bytes, decoded)
     };
     write(path, bytes)?;
+    write(
+        &path.with_extension("plan.json"),
+        serde_json::to_vec_pretty(&plan).map_err(|e| e.to_string())?,
+    )?;
+    write(
+        &path.with_extension("threads.json"),
+        serde_json::to_vec_pretty(&embroidery_lab::commands::thread_sidecar(project, stitches))
+            .map_err(|e| e.to_string())?,
+    )?;
     project.save(&path.with_extension("elab"))?;
     write(
         &path.with_extension("stitches.json"),
-        serde_json::to_vec_pretty(&stitches).map_err(|e| e.to_string())?,
+        serde_json::to_vec_pretty(stitches).map_err(|e| e.to_string())?,
     )?;
-    render(&stitches, &path.with_extension("svg"))?;
+    render(stitches, &path.with_extension("svg"))?;
     println!(
         "{}",
         serde_json::to_string_pretty(&dst::stats(&decoded)).map_err(|e| e.to_string())?
@@ -81,7 +95,7 @@ fn output(project: &Project, path: &Path) -> Result<(), String> {
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let usage = "Usage: embroidery-cli demo OUTPUT.dst | satin-demo OUTPUT.dst | satin-outline INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER WIDTH_MM [closed] | satin-from-branch INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER BRANCH_NUMBER | quality INPUT.(elab|dst|dsb) OUTPUT.json | generate INPUT.(jpg|jpeg|png|pdf|svg|elab) OUTPUT.(dst|dsb) [width_mm] | generate-with-options INPUT.(jpg|png) OUTPUT.(dst|dsb) WIDTH_MM OPTIONS.json | centerlines INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER [PIXEL_MM] | project INPUT OUTPUT.elab [width_mm] | inspect INPUT.dst | roundtrip INPUT.dst OUTPUT.dst | render INPUT.dst OUTPUT.svg | dsb-roundtrip INPUT.dsb OUTPUT.dsb | dsb-records INPUT.dsb OUTPUT.json | dsb-from-dst INPUT.dst OUTPUT.dsb";
+    let usage = "Usage: embroidery-cli trace-report INPUT OUTPUT.json WIDTH_MM OPTIONS.json | autodigitize INPUT.png OUTPUT.dst [WIDTH_MM] [OPTIONS.json] | demo OUTPUT.dst | satin-demo OUTPUT.dst | satin-outline INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER WIDTH_MM [closed] | satin-from-branch INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER BRANCH_NUMBER | quality INPUT.(elab|dst|dsb) OUTPUT.json | generate INPUT.(jpg|jpeg|png|pdf|svg|elab) OUTPUT.(dst|dsb) [width_mm] | generate-with-options INPUT.(jpg|png) OUTPUT.(dst|dsb) WIDTH_MM OPTIONS.json | centerlines INPUT.elab OUTPUT.(dst|dsb) OBJECT_NUMBER [PIXEL_MM] | project INPUT OUTPUT.elab [width_mm] | inspect INPUT.dst | roundtrip INPUT.dst OUTPUT.dst | render INPUT.dst OUTPUT.svg | dsb-roundtrip INPUT.dsb OUTPUT.dsb | dsb-records INPUT.dsb OUTPUT.json | dsb-from-dst INPUT.dst OUTPUT.dsb";
     let command = args.first().ok_or(usage)?;
     let input = || {
         args.get(1)
@@ -98,6 +112,25 @@ fn run() -> Result<(), String> {
             .map_or(Ok(100.), |s| s.parse::<f64>().map_err(|e| e.to_string()))
     };
     match command.as_str() {
+        "trace-report" => {
+            let options = args
+                .get(4)
+                .map(|p| {
+                    read(Path::new(p)).and_then(|bytes| {
+                        serde_json::from_slice::<import::RasterOptions>(&bytes)
+                            .map_err(|e| e.to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or_else(import::RasterOptions::autodigitize);
+            let decoded = import::decode_raster_file(&input()?)?;
+            let (_, report) =
+                import::load_pixels_with_report(&decoded, &input()?, width()?, &options)?;
+            write(
+                &target()?,
+                serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+            )
+        }
         "satin-outline" => {
             let mut project = Project::load(&input()?)?;
             let index: usize = args
@@ -217,15 +250,49 @@ fn run() -> Result<(), String> {
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            let project = if ["dst", "dsb"].contains(&extension.as_str()) {
+                None
+            } else {
+                Some(Project::load(&path)?)
+            };
+            let plan = project.as_ref().map(engine::generate_plan).transpose()?;
             let stitches = match extension.as_str() {
                 "dst" => dst::decode(&read(&path)?)?,
                 "dsb" => dsb::preview(&dsb::decode(&read(&path)?)?)?,
-                _ => engine::generate(&Project::load(&path)?)?,
+                _ => plan.as_ref().unwrap().stitches.clone(),
             };
-            let issues = quality::analyze(&stitches, Default::default());
+            let issues = if let (Some(plan), Some(project)) = (&plan, &project) {
+                quality::analyze_plan(plan, project, Default::default())
+            } else {
+                quality::analyze(&stitches, Default::default())
+            };
+            let coverage = if let (Some(plan), Some(project)) = (&plan, &project) {
+                quality::coverage_estimates(plan, project, 0.45)
+            } else {
+                vec![]
+            };
             let report:Vec<_>=issues.iter().map(|i|serde_json::json!({"kind":format!("{:?}",i.kind),"object_id":i.object_id,"point":i.point,"command_index":i.index,"severity":"warning"})).collect();
-            write(&target()?,serde_json::to_vec_pretty(&serde_json::json!({"short_stitch_mm":0.3,"long_jump_mm":10.,"density_grid_mm":1.,"max_punctures_per_cell":20,"issues":report})).map_err(|e|e.to_string())?)
+            write(&target()?,serde_json::to_vec_pretty(&serde_json::json!({"short_stitch_mm":0.3,"long_jump_mm":10.,"density_grid_mm":1.,"max_punctures_per_cell":20,"issues":report,"coverage":coverage,"segment_density":plan.as_ref().map(|p|quality::segment_density(p,1.)),"plan_summary":plan.as_ref().map(quality::plan_summary),"warnings":plan.as_ref().map(|p|&p.warnings)})).map_err(|e|e.to_string())?)
         }
+        "autodigitize" => {
+            let options = args
+                .get(4)
+                .map(|p| {
+                    read(Path::new(p)).and_then(|bytes| {
+                        serde_json::from_slice::<import::RasterOptions>(&bytes)
+                            .map_err(|e| e.to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or_else(import::RasterOptions::autodigitize);
+            let mut project = import::load_image_with_options(&input()?, width()?, &options)?;
+            let _warnings = embroidery_lab::autodigitize::classify_project(
+                &mut project,
+                &std::sync::atomic::AtomicBool::new(false),
+            );
+            output(&project, &target()?)
+        }
+
         "demo" => output(&Project::demo(), &input()?),
         "centerlines" => {
             let project = Project::load(&input()?)?;

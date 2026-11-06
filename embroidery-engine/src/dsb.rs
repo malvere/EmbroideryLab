@@ -248,6 +248,8 @@ pub fn encode(records: &[DsbRecord], name: &str) -> Result<Vec<u8>, String> {
 /// Project ColorChange has no physical needle assignment. This experimental
 /// conversion emits manual Stop (E8), never guesses an automatic needle change.
 pub fn from_stitches(stitches: &[Stitch]) -> Result<Vec<DsbRecord>, String> {
+    let normalized = crate::commands::normalize(stitches)?;
+    let stitches = &normalized;
     if stitches.len() > LIMIT {
         return Err("DSB conversion exceeds one million commands".into());
     }
@@ -259,6 +261,7 @@ pub fn from_stitches(stitches: &[Stitch]) -> Result<Vec<DsbRecord>, String> {
             command: match stitch.command {
                 Command::Stitch => DsbCommand::Stitch,
                 Command::Jump => DsbCommand::Jump,
+                Command::Trim => DsbCommand::Trim,
                 Command::ColorChange => DsbCommand::Stop,
                 Command::End => DsbCommand::End,
             },
@@ -279,7 +282,7 @@ pub fn from_stitches(stitches: &[Stitch]) -> Result<Vec<DsbRecord>, String> {
     Ok(records)
 }
 
-/// View-only projection. Trim becomes a zero-movement Jump, and Stop/Needle
+/// View-only projection. Trim retains a stationary cut intention, and Stop/Needle
 /// become illustrative colour changes. Keep the original DsbRecord sequence for
 /// re-export; this projection cannot preserve all DSB machine semantics in DST.
 pub fn preview(records: &[DsbRecord]) -> Result<Vec<Stitch>, String> {
@@ -290,7 +293,8 @@ pub fn preview(records: &[DsbRecord]) -> Result<Vec<Stitch>, String> {
     for record in records {
         let command = match record.command {
             DsbCommand::Stitch => Command::Stitch,
-            DsbCommand::Jump | DsbCommand::Trim => Command::Jump,
+            DsbCommand::Jump => Command::Jump,
+            DsbCommand::Trim => Command::Trim,
             DsbCommand::Stop => {
                 palette = (palette + 1) % PALETTE.len();
                 group += 1;

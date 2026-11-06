@@ -182,7 +182,11 @@ fn closed_seam_follows_mapped_rungs_and_first_side_is_respected() {
     column.first_right = true;
     let stations = engine::satin_stations(&column, 0.4).unwrap();
     let generated = engine::generate(&project(column)).unwrap();
-    assert!(generated[0].point().distance(stations[0].1) < 1e-7);
+    let grid = Point::new(
+        (stations[0].1.x * 10.).round() / 10.,
+        (stations[0].1.y * 10.).round() / 10.,
+    );
+    assert_eq!(generated[0].point(), grid);
 }
 
 #[test]
@@ -430,7 +434,7 @@ fn optimize_order_cannot_increase_actual_jump_count_or_length() {
 }
 
 #[test]
-fn legacy_v2_satin_matches_recorded_v04_stitches_exactly() {
+fn legacy_v2_satin_preserves_recorded_v04_machine_path() {
     // Independent synthetic baseline copied from outputs/development/satin;
     // includes centerwalk, curved rails, ties and the historical jump policy.
     let project: Project =
@@ -439,7 +443,17 @@ fn legacy_v2_satin_matches_recorded_v04_stitches_exactly() {
         "../../tests/fixtures/legacy_satin_v2.stitches.json"
     ))
     .unwrap();
-    let actual = engine::generate(&project).unwrap();
+    // The editor retains precise rails; the shared machine plan now uses the
+    // same 0.1mm grid as DST/DSB. Compare the historical path on that grid.
+    // Trim intentions are new stationary annotations, not added needle motion.
+    let original = serde_json::to_value(&project).unwrap();
+    let actual: Vec<_> = engine::generate(&project)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.command != Command::Trim)
+        .collect();
+    let expected = embroidery_lab::commands::normalize(&expected).unwrap();
+    assert_eq!(serde_json::to_value(&project).unwrap(), original);
     assert_eq!(actual.len(), expected.len());
     for (i, (a, b)) in actual.iter().zip(expected).enumerate() {
         assert_eq!(a.command, b.command, "command {i}");
@@ -462,6 +476,9 @@ fn evenly_spaced_rungs_do_not_double_density_and_json_preserves_exact_geometry()
     assert_eq!(stations.len(), 101);
     let mut project = project(column.clone());
     project.version = 4;
+    // The edited first rail node below creates a 10.22mm diagonal. Keep this
+    // serialization/density fixture within an explicit unsplit physical cap.
+    project.objects[0].settings.length_mm = 11.;
     // These coordinates appeared in the real semi-automatic save/open failure.
     project.objects[0].satin_column.as_mut().unwrap().left[0].x = 9.399999999999999;
     let loaded: Project = serde_json::from_slice(&serde_json::to_vec(&project).unwrap()).unwrap();

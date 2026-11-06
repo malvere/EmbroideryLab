@@ -97,9 +97,12 @@ fn copy_retains_original_geometry_order_settings_and_other_objects() {
 #[test]
 fn extracted_open_centerline_exports_without_outline_or_endpoint_closure() {
     let p = project();
+    let original = bytes(&p);
     let (candidate, report) = centerline_workflow::running_copy(&p, 0, 0.25).unwrap();
     assert_eq!(report.paths.len(), 1);
     let path = &report.paths[0];
+    assert_eq!(candidate.objects[1].running_paths, report.paths);
+    let editable = bytes(&candidate);
     assert!(path.first().unwrap().distance(*path.last().unwrap()) > 20.);
     let generated = engine::generate(&candidate).unwrap();
     assert!(
@@ -114,10 +117,24 @@ fn extracted_open_centerline_exports_without_outline_or_endpoint_closure() {
             .count(),
         1
     );
-    assert_eq!(generated.last().unwrap().point(), *path.last().unwrap());
+    assert_eq!(bytes(&p), original);
+    assert_eq!(
+        bytes(&candidate),
+        editable,
+        "Generation must retain the precise editable centerline"
+    );
+    let quantize =
+        |point: Point| Point::new((point.x * 10.).round() / 10., (point.y * 10.).round() / 10.);
+    let grid_end = quantize(*path.last().unwrap());
+    let grid_start = quantize(*path.first().unwrap());
+    let grid_tolerance = std::f64::consts::SQRT_2 * 0.05 + 1e-10;
+    assert_eq!(generated.first().unwrap().point(), grid_start);
+    assert_eq!(generated.last().unwrap().point(), grid_end);
+    assert!(grid_end.distance(*path.last().unwrap()) <= grid_tolerance);
     let encoded_dst = dst::encode(&generated, "Centerline").unwrap();
     let encoded_dsb = dsb::encode(&dsb::from_stitches(&generated).unwrap(), "Centerline").unwrap();
     for decoded in [
+        generated.clone(),
         dst::decode(&encoded_dst).unwrap(),
         dsb::preview(&dsb::decode(&encoded_dsb).unwrap()).unwrap(),
     ] {
@@ -127,8 +144,9 @@ fn extracted_open_centerline_exports_without_outline_or_endpoint_closure() {
                 .unwrap()
                 .point()
                 .distance(*path.last().unwrap())
-                <= 0.071
+                <= grid_tolerance
         );
+        assert_eq!(decoded.last().unwrap().point(), grid_end);
         let sewn: Vec<_> = decoded
             .iter()
             .filter(|s| s.command == Command::Stitch)

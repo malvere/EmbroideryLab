@@ -78,7 +78,8 @@ impl Editor {
     }
 
     fn reverse_selected(&mut self) {
-        if self.stitch_only || self.selected >= self.project.objects.len() {
+        if self.stitch_only || self.selected_locked() || self.selected >= self.project.objects.len()
+        {
             return;
         }
         let mut object = self.project.objects[self.selected].clone();
@@ -114,7 +115,8 @@ impl Editor {
     }
 
     pub(super) fn move_selected(&mut self, later: bool) {
-        if self.stitch_only || self.selected >= self.project.objects.len() {
+        if self.stitch_only || self.selected_locked() || self.selected >= self.project.objects.len()
+        {
             return;
         }
         let target = if later {
@@ -125,6 +127,12 @@ impl Editor {
         let Some(target) = target.filter(|i| *i < self.project.objects.len()) else {
             return;
         };
+        if self
+            .locked_objects
+            .contains(&self.project.objects[target].id)
+        {
+            return;
+        }
         self.snapshot();
         self.project.objects.swap(self.selected, target);
         self.selected = target;
@@ -133,7 +141,8 @@ impl Editor {
     }
 
     pub(super) fn remove_selected(&mut self) {
-        if self.stitch_only || self.selected >= self.project.objects.len() {
+        if self.stitch_only || self.selected_locked() || self.selected >= self.project.objects.len()
+        {
             return;
         }
         self.snapshot();
@@ -179,7 +188,9 @@ impl Editor {
                     ui.label(egui::RichText::new(&object.name).strong());
                     ui.separator();
                 }
-                let editable = !self.stitch_only && self.selected < self.project.objects.len();
+                let editable = !self.stitch_only
+                    && !self.selected_locked()
+                    && self.selected < self.project.objects.len();
                 let config =
                     egui::containers::menu::MenuConfig::new().close_behavior(close_behavior);
                 ui.add_enabled_ui(editable, |ui| {
@@ -249,6 +260,9 @@ impl Editor {
     }
 
     fn context_editing(&mut self, ui: &mut egui::Ui) {
+        if self.stitch_only || self.selected_locked() {
+            return;
+        }
         let language = self.language;
         if ui.button(language.text("Edit nodes")).clicked() {
             self.cancel_draft();
@@ -323,91 +337,129 @@ impl Editor {
     }
 
     pub(super) fn object_parameters(&mut self, ui: &mut egui::Ui) {
+        let language = self.language;
         if self.stitch_only {
-            ui.label(
-                self.language
-                    .text("Machine preview has no editable objects."),
-            );
+            ui.label(language.text("Machine preview has no editable objects."));
             return;
         }
-        let language = self.language;
-        let before = self.project.clone();
+        if self.selected_locked() {
+            ui.label(language.text("Object is locked. Unlock it in Layers to edit."));
+            return;
+        }
+        let before = self.project.objects.get(self.selected).cloned();
+        let before_version = self.project.version;
         let mut changed = false;
         let mut reverse = false;
         if let Some(o) = self.project.objects.get_mut(self.selected) {
-            changed |= ui.text_edit_singleline(&mut o.name).changed();
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut o.name)
+                        .hint_text(language.text("Object name"))
+                        .desired_width(f32::INFINITY),
+                )
+                .changed();
             ui.horizontal(|ui| {
                 ui.label(language.text("Thread"));
                 changed |= ui.color_edit_button_srgb(&mut o.color).changed();
             });
+            ui.add_space(4.);
             ui.separator();
+            ui.label(egui::RichText::new(language.text("Stitch")).strong());
             let open_paths = !o.running_paths.is_empty();
-            ui.add_enabled_ui(!open_paths, |ui| {
-                egui::ComboBox::from_label(language.text("Type"))
-                    .selected_text(stitch_kind_label(language, o.settings.kind))
-                    .show_ui(ui, |ui| {
-                        for k in [StitchKind::Running, StitchKind::Satin, StitchKind::Tatami] {
-                            changed |= ui
-                                .selectable_value(
-                                    &mut o.settings.kind,
-                                    k,
-                                    stitch_kind_label(language, k),
-                                )
-                                .changed();
-                        }
+            let mut rail_satin = o.satin_column.is_some() && o.settings.kind == StitchKind::Satin;
+            let field_width = ((ui.available_width() - 12.) * 0.5).max(80.);
+            egui::Grid::new(("inspector-stitch-fields", o.id))
+                .num_columns(2)
+                .min_col_width(0.)
+                .max_col_width(field_width)
+                .spacing(Vec2::new(12., 6.))
+                .show(ui, |ui| {
+                    ui.label(language.text("Type"));
+                    ui.add_enabled_ui(!open_paths, |ui| {
+                        egui::ComboBox::from_id_salt("inspector-stitch-type")
+                            .width(field_width)
+                            .selected_text(stitch_kind_label(language, o.settings.kind))
+                            .show_ui(ui, |ui| {
+                                for k in
+                                    [StitchKind::Running, StitchKind::Satin, StitchKind::Tatami]
+                                {
+                                    changed |= ui
+                                        .selectable_value(
+                                            &mut o.settings.kind,
+                                            k,
+                                            stitch_kind_label(language, k),
+                                        )
+                                        .changed();
+                                }
+                            });
                     });
-            });
-            if open_paths {
-                ui.small(language.text(
-                    "Running paths. Branches are sewn separately; closed loops stay closed.",
-                ));
-            }
-            let rail_satin = o.satin_column.is_some() && o.settings.kind == StitchKind::Satin;
-            if !open_paths {
-                ui.label(if rail_satin {
-                    language.text("Rail puncture spacing (mm)")
-                } else {
-                    language.text("Row spacing (mm)")
+                    ui.end_row();
+                    // Type changes update the applicable fields in this same frame.
+                    rail_satin = o.satin_column.is_some() && o.settings.kind == StitchKind::Satin;
+                    if !open_paths {
+                        ui.label(language.text(if rail_satin {
+                            "Rail spacing"
+                        } else {
+                            "Row spacing"
+                        }))
+                        .on_hover_text(language.text(if rail_satin {
+                            "Rail puncture spacing (mm)"
+                        } else {
+                            "Row spacing (mm)"
+                        }));
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut o.settings.spacing_mm)
+                                    .speed(0.01)
+                                    .range(0.15..=5.)
+                                    .fixed_decimals(2)
+                                    .suffix(format!(" {}", language.text("mm"))),
+                            )
+                            .changed();
+                        ui.end_row();
+                        ui.label(egui::RichText::new(language.text("Density")).small());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.2} {} / {}",
+                                1. / o.settings.spacing_mm,
+                                if rail_satin {
+                                    language.text("rail punctures")
+                                } else {
+                                    language.text("rows")
+                                },
+                                language.text("mm")
+                            ))
+                            .small(),
+                        );
+                        ui.end_row();
+                    }
+                    ui.label(language.text("Max length"))
+                        .on_hover_text(language.text("Max stitch length (mm)"));
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut o.settings.length_mm)
+                                .speed(0.1)
+                                .range(0.5..=12.)
+                                .fixed_decimals(1)
+                                .suffix(format!(" {}", language.text("mm"))),
+                        )
+                        .changed();
+                    ui.end_row();
+                    if !open_paths && !rail_satin {
+                        ui.label(language.text("Fill angle"))
+                            .on_hover_text(language.text("Angle (degrees)"));
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut o.settings.angle_deg)
+                                    .speed(1.)
+                                    .range(0. ..=180.)
+                                    .suffix("°"),
+                            )
+                            .changed();
+                        ui.end_row();
+                    }
                 });
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut o.settings.spacing_mm)
-                            .speed(0.01)
-                            .range(0.15..=5.)
-                            .fixed_decimals(2),
-                    )
-                    .changed();
-                ui.small(format!(
-                    "{:.2} {} / {}",
-                    1. / o.settings.spacing_mm,
-                    if rail_satin {
-                        language.text("rail punctures")
-                    } else {
-                        language.text("rows")
-                    },
-                    language.text("mm")
-                ));
-            }
-            ui.label(language.text("Max stitch length (mm)"));
-            changed |= ui
-                .add(
-                    egui::DragValue::new(&mut o.settings.length_mm)
-                        .speed(0.1)
-                        .range(0.5..=12.)
-                        .fixed_decimals(1),
-                )
-                .changed();
-            if rail_satin {
-                ui.small(
-                    language.text(
-                        "Direction follows the two rails. Drag rail nodes to shape the column.",
-                    ),
-                );
-            } else if !open_paths {
-                ui.label(language.text("Angle (degrees)"));
-                changed |= ui
-                    .add(egui::Slider::new(&mut o.settings.angle_deg, 0. ..=180.))
-                    .changed();
+            if !open_paths && !rail_satin {
                 changed |= ui
                     .checkbox(
                         &mut o.settings.auto_angle,
@@ -415,131 +467,147 @@ impl Editor {
                     )
                     .changed();
             }
-            ui.separator();
-            if !open_paths {
-                changed |= ui
-                    .checkbox(
-                        &mut o.settings.underlay,
-                        if rail_satin {
-                            language.text("Centerwalk underlay")
-                        } else {
-                            language.text("Sparse underlay")
-                        },
-                    )
-                    .changed();
-                ui.label(language.text("Pull compensation (mm)"));
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut o.settings.pull_comp_mm)
-                            .speed(0.01)
-                            .range(0. ..=1.)
-                            .fixed_decimals(2),
-                    )
-                    .changed();
-            }
-            changed |= ui
-                .checkbox(&mut o.settings.tie_in, language.text("Tie-in"))
-                .changed();
-            changed |= ui
-                .checkbox(&mut o.settings.tie_off, language.text("Tie-off"))
-                .changed();
-            ui.separator();
-            ui.label(if open_paths {
-                language.text("Running path direction")
+            if open_paths {
+                ui.small(language.text(
+                    "Running paths. Branches are sewn separately; closed loops stay closed.",
+                ));
             } else if rail_satin {
-                language.text("Satin direction")
-            } else {
-                language.text("Start / end contour")
-            });
-            if !open_paths
-                && !rail_satin
-                && ui
-                    .button(language.text("Move start to selected node"))
-                    .clicked()
-                && let Some((r, n)) = self.selected_node
-                && let Some(ring) = o.contours.get_mut(r)
-            {
-                ring.rotate_left(n);
-                self.selected_node = Some((r, 0));
-                changed = true;
+                ui.small(
+                    language.text(
+                        "Direction follows the two rails. Drag rail nodes to shape the column.",
+                    ),
+                );
             }
-            if ui.button(language.text("Reverse direction")).clicked() {
-                reverse = true;
-            }
-            if let Some((r, n)) = self.selected_node
-                && let Some(p) = o.contours.get_mut(r).and_then(|ring| ring.get_mut(n))
-            {
-                ui.label(language.text("Selected node (mm)"));
-                ui.horizontal(|ui| {
-                    changed |= ui
-                        .add(egui::DragValue::new(&mut p.x).prefix("X ").speed(0.1))
-                        .changed();
-                    changed |= ui
-                        .add(egui::DragValue::new(&mut p.y).prefix("Y ").speed(0.1))
-                        .changed();
-                });
-            }
-            ui.small(if open_paths {language.text("Drag path nodes on the canvas. Changes remain editable in ELAB.")}else if rail_satin{language.text("Drag rail nodes or handles. Double-click a rail to insert a node; Delete removes the selected node.")}else{language.text("Drag square nodes or Bezier handles on the canvas. Delete removes a selected polygon node.")});
-            if let Some((r, n)) = self.selected_path
-                && let Some(path) = o.running_paths.get(r)
-                && let Some(point) = path.get(n)
-            {
-                let mut point = *point;
-                ui.label(language.text("Selected path node (mm)"));
-                let mut edited = false;
-                ui.horizontal(|ui| {
-                    edited |= ui
-                        .add(egui::DragValue::new(&mut point.x).prefix("X ").speed(0.1))
-                        .changed();
-                    edited |= ui
-                        .add(egui::DragValue::new(&mut point.y).prefix("Y ").speed(0.1))
-                        .changed();
-                });
-                if edited {
-                    match set_path_node(o, r, n, point) {
-                        Ok(()) => changed = true,
-                        Err(e) => {
-                            self.message = e;
-                            self.error = true;
-                        }
-                    }
-                }
-            }
-            if let Some((right, n)) = self.selected_rail
-                && let Some(column) = &mut o.satin_column
-            {
-                let rail = if right { &column.right } else { &column.left };
-                if let Some(point) = rail.get(n) {
-                    let mut point = *point;
-                    let mut edited = false;
-                    ui.label(language.text("Selected rail node (mm)"));
-                    ui.horizontal(|ui| {
-                        edited |= ui
-                            .add(egui::DragValue::new(&mut point.x).prefix("X ").speed(0.1))
+            ui.add_space(6.);
+            if !open_paths {
+                egui::CollapsingHeader::new(language.text("Underlay & compensation"))
+                    .id_salt("inspector-underlay")
+                    .show(ui, |ui| {
+                        changed |= ui
+                            .checkbox(
+                                &mut o.settings.underlay,
+                                language.text(if rail_satin {
+                                    "Centerwalk underlay"
+                                } else {
+                                    "Sparse underlay"
+                                }),
+                            )
                             .changed();
-                        edited |= ui
-                            .add(egui::DragValue::new(&mut point.y).prefix("Y ").speed(0.1))
-                            .changed();
+                        egui::Grid::new(("inspector-compensation-fields", o.id))
+                            .num_columns(2)
+                            .min_col_width(0.)
+                            .max_col_width(field_width)
+                            .spacing(Vec2::new(12., 6.))
+                            .show(ui, |ui| {
+                                ui.label(language.text("Compensation"))
+                                    .on_hover_text(language.text("Pull compensation (mm)"));
+                                changed |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut o.settings.pull_comp_mm)
+                                            .speed(0.01)
+                                            .range(0. ..=1.)
+                                            .fixed_decimals(2)
+                                            .suffix(format!(" {}", language.text("mm"))),
+                                    )
+                                    .changed();
+                                ui.end_row();
+                            });
                     });
-                    if edited {
-                        match embroidery_lab::satin_edit::set_node(column, right, n, point) {
-                            Ok(()) => {
-                                changed = true;
-                                self.project.version = 4;
-                            }
-                            Err(e) => {
-                                self.message = e;
-                                self.error = true;
+            }
+            egui::CollapsingHeader::new(language.text("Tie stitches"))
+                .id_salt("inspector-ties")
+                .show(ui, |ui| {
+                    changed |= ui
+                        .checkbox(&mut o.settings.tie_in, language.text("Tie-in"))
+                        .changed();
+                    changed |= ui
+                        .checkbox(&mut o.settings.tie_off, language.text("Tie-off"))
+                        .changed();
+                });
+            egui::CollapsingHeader::new(language.text("Geometry"))
+                .id_salt("inspector-geometry").default_open(false).show(ui, |ui| {
+                    ui.label(egui::RichText::new(language.text(if open_paths { "Running path direction" }
+                        else if rail_satin { "Satin direction" } else { "Start / end contour" })).strong());
+                    if !open_paths && !rail_satin {
+                        let selected = self.selected_node;
+                        if ui.add_enabled(selected.is_some(), egui::Button::new(language.text("Move start to selected node"))).clicked()
+                            && let Some((r, n)) = selected && let Some(ring) = o.contours.get_mut(r) {
+                            ring.rotate_left(n);
+                            self.selected_node = Some((r, 0));
+                            changed = true;
+                        }
+                    }
+                    if ui.button(language.text("Reverse direction")).clicked() { reverse = true; }
+                    if let Some((r, n)) = self.selected_node
+                        && let Some(p) = o.contours.get_mut(r).and_then(|ring| ring.get_mut(n)) {
+                        ui.add_space(6.);
+                        ui.label(egui::RichText::new(language.text("Selected node (mm)")).strong());
+                        egui::Grid::new(("inspector-polygon-node", o.id)).num_columns(2)
+                            .spacing(Vec2::new(12., 6.)).show(ui, |ui| {
+                                ui.label("X");
+                                changed |= ui.add(egui::DragValue::new(&mut p.x).speed(0.1).suffix(format!(" {}", language.text("mm")))).changed();
+                                ui.end_row();
+                                ui.label("Y");
+                                changed |= ui.add(egui::DragValue::new(&mut p.y).speed(0.1).suffix(format!(" {}", language.text("mm")))).changed();
+                                ui.end_row();
+                            });
+                    }
+                    if let Some((r, n)) = self.selected_path
+                        && let Some(path) = o.running_paths.get(r) && let Some(point) = path.get(n) {
+                        let mut point = *point;
+                        let mut edited = false;
+                        ui.add_space(6.);
+                        ui.label(egui::RichText::new(language.text("Selected path node (mm)")).strong());
+                        egui::Grid::new(("inspector-path-node", o.id)).num_columns(2)
+                            .spacing(Vec2::new(12., 6.)).show(ui, |ui| {
+                                ui.label("X");
+                                edited |= ui.add(egui::DragValue::new(&mut point.x).speed(0.1).suffix(format!(" {}", language.text("mm")))).changed();
+                                ui.end_row();
+                                ui.label("Y");
+                                edited |= ui.add(egui::DragValue::new(&mut point.y).speed(0.1).suffix(format!(" {}", language.text("mm")))).changed();
+                                ui.end_row();
+                            });
+                        if edited {
+                            match set_path_node(o, r, n, point) {
+                                Ok(()) => changed = true,
+                                Err(e) => { self.message = e; self.error = true; }
                             }
                         }
                     }
-                }
-            }
+                    if let Some((right, n)) = self.selected_rail && let Some(column) = &mut o.satin_column {
+                        let rail = if right { &column.right } else { &column.left };
+                        if let Some(point) = rail.get(n) {
+                            let mut point = *point;
+                            let mut edited = false;
+                            ui.add_space(6.);
+                            ui.label(egui::RichText::new(language.text("Selected rail node (mm)")).strong());
+                            egui::Grid::new(("inspector-rail-node", o.id)).num_columns(2)
+                                .spacing(Vec2::new(12., 6.)).show(ui, |ui| {
+                                    ui.label("X");
+                                    edited |= ui.add(egui::DragValue::new(&mut point.x).speed(0.1).suffix(format!(" {}", language.text("mm")))).changed();
+                                    ui.end_row();
+                                    ui.label("Y");
+                                    edited |= ui.add(egui::DragValue::new(&mut point.y).speed(0.1).suffix(format!(" {}", language.text("mm")))).changed();
+                                    ui.end_row();
+                                });
+                            if edited {
+                                match embroidery_lab::satin_edit::set_node(column, right, n, point) {
+                                    Ok(()) => { changed = true; self.project.version = 4; }
+                                    Err(e) => { self.message = e; self.error = true; }
+                                }
+                            }
+                        }
+                    }
+                    ui.add_space(4.);
+                    ui.small(language.text(if open_paths { "Drag path nodes on the canvas. Changes remain editable in ELAB." }
+                        else if rail_satin { "Drag rail nodes or handles. Double-click a rail to insert a node; Delete removes the selected node." }
+                        else { "Drag square nodes or Bezier handles on the canvas. Delete removes a selected polygon node." }));
+                });
         } else {
             ui.label(language.text("Select or create an object."));
         }
-        if changed {
-            self.record_field_edit(before);
+        if changed && let Some(before) = before {
+            self.record_object_field_edit(before, before_version);
         }
         if reverse {
             self.reverse_selected();

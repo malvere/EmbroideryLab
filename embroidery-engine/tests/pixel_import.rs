@@ -67,7 +67,8 @@ fn rendered_page_pixels_are_embedded_and_reopen_without_a_source_file() {
         import::load_pixels_with_options(&image, &source_name, 80., &RasterOptions::default())
             .unwrap();
     assert_eq!(project.name, "document-page-2");
-    assert_eq!(project.version, 4);
+    assert_eq!(project.version, 5);
+    assert!(project.raster_recipe.is_some());
     let embedded = project.source_image.as_ref().unwrap();
     assert_eq!(embedded.file_name, "document-page-2.pdf");
     assert_eq!(
@@ -113,4 +114,73 @@ fn pixel_import_validates_dimensions_width_and_options_before_tracing() {
             .unwrap_err()
             .contains("palette_size")
     );
+}
+
+#[test]
+fn worker_supplied_original_jpeg_is_preserved_and_rebased_without_png_reencoding() {
+    let path = folder("jpeg-source").join("original.jpg");
+    artwork().to_rgb8().save(&path).unwrap();
+    let source = embroidery_lab::persistence::SourceImage::from_path(&path, 80.).unwrap();
+    let original = source.encoded.clone();
+    // Frozen preview is derived from exactly these bytes, as required by the
+    // public worker API; GUI workers verify a fresh path against their snapshot.
+    let decoded = source.decode().unwrap();
+    let (project, _) = import::load_pixels_with_source_report_cancellable(
+        &decoded,
+        &path,
+        120.,
+        &RasterOptions::default(),
+        &std::sync::atomic::AtomicBool::new(false),
+        source,
+    )
+    .unwrap();
+    let embedded = project.source_image.as_ref().unwrap();
+    assert_eq!(embedded.encoded, original);
+    assert_eq!(
+        image::guess_format(&embedded.encoded).unwrap(),
+        image::ImageFormat::Jpeg
+    );
+    assert_eq!(embedded.width_mm, 120.);
+    assert_eq!(embedded.height_mm, 90.);
+    assert_eq!(embedded.decode().unwrap().to_rgba8(), decoded.to_rgba8());
+    assert_eq!(project.raster_recipe.as_ref().unwrap().width_mm, 120.);
+    let saved = folder("jpeg-source").join("preserved.elab");
+    project.save(&saved).unwrap();
+    assert_eq!(
+        Project::load(&saved).unwrap().source_image.unwrap().encoded,
+        original
+    );
+}
+
+#[test]
+fn worker_supplied_source_rejects_dimension_mismatch_and_honors_cancellation() {
+    let source = embroidery_lab::persistence::SourceImage::from_image(
+        "other.png".into(),
+        &image::DynamicImage::new_rgba8(32, 32),
+        80.,
+    )
+    .unwrap();
+    let decoded = artwork();
+    let path = Path::new("frozen.png");
+    let options = RasterOptions::default();
+    let error = import::load_pixels_with_source_report_cancellable(
+        &decoded,
+        path,
+        80.,
+        &options,
+        &std::sync::atomic::AtomicBool::new(false),
+        source.clone(),
+    )
+    .unwrap_err();
+    assert!(error.contains("source dimensions do not match the frozen import preview"));
+    let error = import::load_pixels_with_source_report_cancellable(
+        &decoded,
+        path,
+        80.,
+        &options,
+        &std::sync::atomic::AtomicBool::new(true),
+        source,
+    )
+    .unwrap_err();
+    assert!(error.contains("cancelled"));
 }

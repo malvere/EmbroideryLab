@@ -18,11 +18,12 @@ impl Editor {
         if let Some(path) = rfd::FileDialog::new()
             .set_title(self.language.text("Import image…"))
             .add_filter(
-                self.language.text("Images (JPEG, PNG, PDF, SVG)"),
-                &["jpg", "jpeg", "png", "pdf", "svg"],
+                self.language.text("Images (JPEG, PNG, WebP, PDF, SVG)"),
+                &["jpg", "jpeg", "png", "webp", "pdf", "svg"],
             )
             .add_filter(self.language.text("JPEG image"), &["jpg", "jpeg"])
             .add_filter(self.language.text("PNG image"), &["png"])
+            .add_filter(self.language.text("WebP image"), &["webp"])
             .add_filter(self.language.text("PDF document"), &["pdf"])
             .pick_file()
         {
@@ -35,6 +36,9 @@ impl Editor {
     }
 
     pub(super) fn dropped_artwork(&mut self, ctx: &egui::Context) {
+        if self.confirm_new {
+            return;
+        }
         if self.import_preview.is_some()
             || self.recovery.is_some()
             || self.confirm_close
@@ -59,6 +63,7 @@ impl Editor {
     }
 
     pub(super) fn start_pdf_load(&mut self, path: PathBuf, page_index: usize, ctx: &egui::Context) {
+        self.cancel_digitize();
         if self.pdf_job.is_some() {
             self.result(Err(
                 "Finishing the previous PDF load. Try again shortly.".into()
@@ -90,14 +95,18 @@ impl Editor {
         page: embroidery_lab::pdf_import::RenderedPage,
         ctx: &egui::Context,
     ) {
-        let pixels = page.image.thumbnail(480, 480).to_rgba8();
+        self.clear_import_diagnostics();
+        let pixels = embroidery_lab::color_selection::thumbnail_rgba(&page.image.to_rgba8(), 480);
+        self.raster_options.cleanup = None;
+        self.raster_options.background = import::BackgroundMode::TransparentOnly;
+        self.cleanup.reset(&page.image.to_rgba8(), None);
         let data = egui::ColorImage::from_rgba_unmultiplied(
             [pixels.width() as usize, pixels.height() as usize],
             pixels.as_raw(),
         );
         self.import_preview = Some(ImportPreview {
             path,
-            pixels,
+            pixels: std::sync::Arc::new(page.image.to_rgba8()),
             texture: ctx.load_texture("PDF page preview", data, egui::TextureOptions::LINEAR),
             pdf: Some(PdfPreview {
                 page_index,
@@ -192,22 +201,92 @@ mod tests {
         let ctx = egui::Context::default();
         for filename in ["synthetic_two_colors.jpg", "synthetic_holes.png"] {
             let mut app = Editor::workspace();
+            app.project.machine_profile.max_stitch_mm = 8.;
+            app.project.machine_profile.hoop_width_mm = Some(200.);
+            app.project.machine_profile.dst_trim_encoding = dst::TrimEncoding::KeepThread;
+            let machine_profile = app.project.machine_profile.clone();
             let original = serde_json::to_value(&app.project).unwrap();
-            app.request_open(
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../tests/fixtures")
-                    .join(filename),
-                &ctx,
-            );
+            let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../tests/fixtures")
+                .join(filename);
+            let original_bytes = std::fs::read(&source_path).unwrap();
+            app.request_open(source_path, &ctx);
             assert!(app.import_preview.is_some(), "{}", app.message);
             assert!(app.import_preview.as_ref().unwrap().pdf.is_none());
             assert_eq!(serde_json::to_value(&app.project).unwrap(), original);
             app.recovery = Some(Project::demo());
             app.commit_import(&ctx);
+            app.wait_for_digitize();
             assert!(app.import_preview.is_none(), "{}", app.message);
             assert!(app.recovery.is_none());
             assert!(app.project.source_image.is_some());
+            assert_eq!(
+                app.project.source_image.as_ref().unwrap().encoded,
+                original_bytes,
+                "GUI must preserve the original encoded JPEG/PNG snapshot"
+            );
             assert!(app.dirty && !app.stitch_only);
+            assert_eq!(
+                app.project.machine_profile, machine_profile,
+                "Import must preserve machine limits and trim policy"
+            );
+        }
+    }
+
+    #[test]
+    fn mislabeled_webp_and_explicit_webp_use_preview_worker_and_portable_png_source() {
+        let ctx = egui::Context::default();
+        let mut pixels = image::RgbaImage::from_pixel(24, 20, image::Rgba([230, 20, 30, 255]));
+        for y in 4..16 {
+            for x in 6..18 {
+                pixels.put_pixel(x, y, image::Rgba([245, 245, 245, 255]));
+            }
+        }
+        pixels.put_pixel(0, 0, image::Rgba([10, 70, 190, 128]));
+        let mut webp = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
+            .encode(pixels.as_raw(), 24, 20, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        for extension in ["svg (1).jpg", "webp"] {
+            let path = std::env::temp_dir().join(format!(
+                "embroiderylab-preview-{}-рисунок.{extension}",
+                std::process::id()
+            ));
+            std::fs::write(&path, &webp).unwrap();
+            let mut app = Editor::workspace_with_language(Language::Russian);
+            let before = serde_json::to_value(&app.project).unwrap();
+            app.request_open(path.clone(), &ctx);
+            assert!(
+                !app.error && app.import_preview.is_some(),
+                "{}",
+                app.message
+            );
+            assert_eq!(*app.import_preview.as_ref().unwrap().pixels, pixels);
+            assert_eq!(
+                serde_json::to_value(&app.project).unwrap(),
+                before,
+                "Opening the cleanup preview must retain the existing document"
+            );
+            app.commit_import(&ctx);
+            app.wait_for_digitize();
+            assert!(
+                !app.error && app.import_preview.is_none(),
+                "{}",
+                app.message
+            );
+            assert!(!app.stale && !app.stitches.is_empty());
+            let source = app.project.source_image.as_ref().unwrap();
+            assert_eq!(
+                image::guess_format(&source.encoded).unwrap(),
+                image::ImageFormat::Png
+            );
+            assert_eq!(source.decode().unwrap().to_rgba8(), pixels);
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                webp,
+                "Import must leave the original mislabeled file unchanged"
+            );
+            std::fs::remove_file(path).unwrap();
         }
     }
 
@@ -230,8 +309,10 @@ mod tests {
             1
         );
         app.preview_regions(&ctx);
+        app.wait_for_digitize();
         assert!(app.region_preview.is_some(), "{}", app.message);
         app.commit_import(&ctx);
+        app.wait_for_digitize();
         assert!(app.import_preview.is_none(), "{}", app.message);
         assert!(app.project.name.contains("2"));
         assert!(app.project.source_image.as_ref().unwrap().decode().is_ok());

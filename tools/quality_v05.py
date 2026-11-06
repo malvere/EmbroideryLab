@@ -2,7 +2,7 @@
 
 Run with Python 3.13 + Pillow 13.0.0 + pyembroidery 1.5.1, after building CLI.
 This script creates its own fixtures/outputs; it never operates a machine,
-reads private artwork, or invokes installed embroidery software. All fixtures are synthetic.
+rewrites historical evidence, or invokes installed embroidery software.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+REAL = ROOT / "outputs/centerlines_v04/real_letter_region10/source.elab"
 
 
 def sha(path):
@@ -131,6 +132,9 @@ def prepare(output):
     cleaned, before = cleaned_axis("Manually cleaned spur graph", True)
     add("manually_cleaned_spur", cleaned, "satin-from-branch", (2, 1),
         "Synthetic graph; cleanup prepared manually; CLI conversion tested", before)
+    real = json.loads(REAL.read_text(encoding="utf-8"))
+    add("real_letter_regression", real, "centerlines", (1, .08),
+        "Real isolated traced letter region; v0.4 regression, no automatic Satin claim")
     crossed = deepcopy(straight)
     crossed["satin_column"]["rungs"] = [{"left": .25, "right": .75}, {"left": .75, "right": .25}]
     invalid = [("crossing_rungs", project("Invalid crossing rungs", [crossed]), "generate", ())]
@@ -350,7 +354,7 @@ def artifacts(summary, output):
         status = "PASS" if case["passed"] else "CHECK REQUIRED"
         preview = f'<img src="{name}/preview.png" alt="Independent machine stitches for {html.escape(name)}">' if (output/name/"preview.png").exists() else ""
         cards.append(f'<article><h2>{html.escape(name)}</h2><p><b>{status}</b> · {html.escape(case["label"])}</p>{preview}<p><a href="{name}/evaluation.json">Checks</a> · <a href="{name}/source.elab">Source</a></p></article>')
-    document = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>EmbroideryLab 0.5 independent checks</title><style>body{font:16px/1.5 system-ui;background:#f3f5f7;color:#203247;margin:0}main{max-width:1250px;margin:auto;padding:32px}header{max-width:950px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(350px,1fr));gap:20px}article{background:white;padding:20px;border:1px solid #d9e0e7}h2{font-size:20px}img{width:100%;height:290px;object-fit:contain}a{color:#155cab}</style><main><header><h1>EmbroideryLab 0.5 · independent checks</h1><p>Synthetic Satin curves, closed outlines, and manually prepared cleaned centerline graphs. DST and DSB are decoded by pyembroidery 1.5.1; PNGs are drawn independently with Pillow 13.0.0.</p><p>Geometry checks sample sewn segments every 0.1 mm with a 0.13 mm diagnostic boundary band for quantization. PASS is a bounded format/geometry check, not proof of stitch quality on fabric. Cleanup fixtures are manually prepared: the CLI does not expose branch deletion. No arbitrary lettering recognition or physical stitch quality is implied. No machine is operated.</p><p><a href="summary.json">Summary, command evidence and hashes</a></p></header><div class="grid">'+"\n".join(cards)+'</div></main></html>'
+    document = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>EmbroideryLab 0.5 independent checks</title><style>body{font:16px/1.5 system-ui;background:#f3f5f7;color:#203247;margin:0}main{max-width:1250px;margin:auto;padding:32px}header{max-width:950px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(350px,1fr));gap:20px}article{background:white;padding:20px;border:1px solid #d9e0e7}h2{font-size:20px}img{width:100%;height:290px;object-fit:contain}a{color:#155cab}</style><main><header><h1>EmbroideryLab 0.5 · independent checks</h1><p>Synthetic Satin curves, closed outlines, manually prepared cleaned centerline graphs, and one real isolated letter-region regression. DST and DSB are decoded by pyembroidery 1.5.1; PNGs are drawn independently with Pillow 13.0.0.</p><p>Geometry checks sample sewn segments every 0.1 mm with a 0.13 mm diagnostic boundary band for quantization. PASS is a bounded format/geometry check, not proof of stitch quality on fabric. Cleanup fixtures are manually prepared: the CLI does not expose branch deletion. The real-letter case tests Running extraction, not automatic Satin lettering. No machine is operated.</p><p><a href="summary.json">Summary, command evidence and hashes</a></p></header><div class="grid">'+"\n".join(cards)+'</div></main></html>'
     (output / "index.html").write_text(document, encoding="utf-8")
     from PIL import Image, ImageDraw
     sheet = Image.new("RGB", (1200, 470*math.ceil(max(1, len(summary["cases"]))/2)), "#f3f5f7")
@@ -372,7 +376,7 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
     output = args.output.resolve()
-    originals = [Path(__file__).resolve()]+[p for p in (ROOT/"tests"/"fixtures").glob("*") if p.is_file()]
+    originals = [REAL]+[p for p in (ROOT/"samples").glob("*") if p.is_file()]
     before = {str(p): sha(p) for p in originals}
     cases, invalid = prepare(output)
     if args.prepare_only:
@@ -388,6 +392,7 @@ def main():
                           "module_sha256": {name: sha(importlib.import_module("pyembroidery."+name).__file__) for name in ("DstReader", "DsbReader")}},
                "renderer": {"package": "Pillow", "version": PIL.__version__},
                "source_sha256_before": before,
+               "real_region_provenance": {"source": str(REAL), "sha256": before[str(REAL)], "scope": "Exact isolated source from v0.4; geometry/format regression, no automatic Satin success claim"},
                "cases": [evaluate(case, output, args.cli.resolve(), pe) for case in cases],
                "invalid_cases": invalid_checks(invalid, output, args.cli.resolve())}
     summary["source_sha256_after"] = {str(p): sha(p) for p in originals}

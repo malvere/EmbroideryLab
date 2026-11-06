@@ -182,7 +182,7 @@ impl RegionPreview {
     }
 }
 
-fn region_identity(object: &Object) -> u64 {
+pub fn region_identity(object: &Object) -> u64 {
     // FNV-1a over canonical ring sequences: cyclic starting-node position,
     // winding direction and ring order do not affect the identity.
     let mut rings: Vec<Vec<(u64, u64)>> = object

@@ -77,6 +77,53 @@ fn quantized_dst_roundtrip_keeps_commands_and_points() {
     let s = engine::generate(&Project::demo()).unwrap();
     let first = dst::decode(&dst::encode(&s, "first").unwrap()).unwrap();
     let second = dst::decode(&dst::encode(&first, "second").unwrap()).unwrap();
+    // Independently expand the selected conventional profile: Trim is three
+    // stationary Jump records, while moving records use the 121-unit axis cap.
+    // Never infer Trim from an arbitrary individual Jump on decoded input.
+    let mut expected = Vec::new();
+    let mut current = (0_i32, 0_i32);
+    let mut trim_intentions = 0;
+    for stitch in &s {
+        if stitch.command == Command::Trim {
+            trim_intentions += 1;
+            for _ in 0..3 {
+                expected.push(embroidery_lab::Stitch {
+                    x: f64::from(current.0) / 10.,
+                    y: f64::from(current.1) / 10.,
+                    command: Command::Jump,
+                    ..*stitch
+                });
+            }
+        } else if matches!(stitch.command, Command::Stitch | Command::Jump) {
+            let target = (
+                (stitch.x * 10.).round() as i32,
+                (stitch.y * 10.).round() as i32,
+            );
+            let delta = (target.0 - current.0, target.1 - current.1);
+            let parts = ((delta.0.abs().max(delta.1.abs()) + 120) / 121).max(1);
+            let start = current;
+            for part in 1..=parts {
+                let x = start.0
+                    + (f64::from(delta.0) * f64::from(part) / f64::from(parts)).round() as i32;
+                let y = start.1
+                    + (f64::from(delta.1) * f64::from(part) / f64::from(parts)).round() as i32;
+                expected.push(embroidery_lab::Stitch {
+                    x: f64::from(x) / 10.,
+                    y: f64::from(y) / 10.,
+                    ..*stitch
+                });
+            }
+            current = target;
+        } else {
+            expected.push(*stitch);
+        }
+    }
+    assert!(trim_intentions > 0);
+    assert_eq!(first.len(), expected.len());
+    for (actual, expected) in first.iter().zip(&expected) {
+        assert_eq!(actual.command, expected.command);
+        assert_eq!(actual.point(), expected.point());
+    }
     assert_eq!(first.len(), second.len());
     for (a, b) in first.iter().zip(second.iter()) {
         assert_eq!(a.point(), b.point());
@@ -131,6 +178,9 @@ fn dst_quantization_respects_requested_maximum_stitch_length() {
                 Point::new(1., 9.),
             ]];
             object.settings.length_mm = limit;
+            // Underlay has an independent requested length. Set both caps to
+            // exercise the original all-sewn-segments <= limit guarantee.
+            object.settings.underlay_length_mm = limit;
             object.settings.angle_deg = angle;
             let decoded =
                 dst::decode(&dst::encode(&engine::generate(&project).unwrap(), "length").unwrap())
@@ -140,5 +190,55 @@ fn dst_quantization_respects_requested_maximum_stitch_length() {
                 "limit={limit}, angle={angle}"
             );
         }
+    }
+}
+
+#[test]
+fn machine_length_cap_bounds_top_underlay_travel_and_locks_after_quantization() {
+    use embroidery_lab::{Point, StitchRole};
+    let mut roles = std::collections::BTreeSet::new();
+    for angle in [0., 27., 137.] {
+        let mut project = Project::demo();
+        let object = &mut project.objects[0];
+        object.contours = vec![vec![
+            Point::new(1., 1.),
+            Point::new(5., 1.),
+            Point::new(5., 3.),
+            Point::new(1., 3.),
+        ]];
+        object.settings.angle_deg = angle;
+        object.settings.spacing_mm = 0.15;
+        object.settings.underlay_spacing_mm = 0.3;
+        // The machine cap is independent of the deliberately longer requested
+        // top/underlay lengths (3.5mm and 3.0mm).
+        project.machine_profile.max_stitch_mm = 0.3;
+        let plan = engine::generate_plan(&project).unwrap();
+        let mut previous = Point::default();
+        for (stitch, meta) in plan.stitches.iter().zip(&plan.metadata) {
+            if stitch.command == Command::Stitch {
+                assert!(
+                    previous.distance(stitch.point()) <= 0.3 + 1e-8,
+                    "role={:?}",
+                    meta.role
+                );
+                roles.insert(format!("{:?}", meta.role));
+            }
+            if matches!(stitch.command, Command::Stitch | Command::Jump) {
+                previous = stitch.point();
+            }
+        }
+        let decoded = dst::decode(&dst::encode(&plan.stitches, "machine length").unwrap()).unwrap();
+        assert!(dst::stats(&decoded).max_stitch_mm <= 0.3 + 1e-8);
+    }
+    for role in [
+        StitchRole::TopFill,
+        StitchRole::Underlay,
+        StitchRole::Travel,
+        StitchRole::Lock,
+    ] {
+        assert!(
+            roles.contains(&format!("{role:?}")),
+            "fixture must exercise {role:?}"
+        );
     }
 }

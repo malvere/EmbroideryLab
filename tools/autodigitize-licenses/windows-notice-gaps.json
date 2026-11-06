@@ -1,0 +1,252 @@
+[
+  {
+    "name": "accesskit",
+    "version": "0.21.1",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "The AccessKit contributors"
+    ],
+    "repository": "https://github.com/AccessKit/accesskit",
+    "commit": "0b6901a8c8e6fb1cb5a2dc7c19dc7bee1cc5ad09",
+    "path_in_vcs": "common",
+    "existing_files": []
+  },
+  {
+    "name": "accesskit_consumer",
+    "version": "0.31.0",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "The AccessKit contributors"
+    ],
+    "repository": "https://github.com/AccessKit/accesskit",
+    "commit": "5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3",
+    "path_in_vcs": "consumer",
+    "existing_files": []
+  },
+  {
+    "name": "accesskit_windows",
+    "version": "0.29.2",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "The AccessKit contributors"
+    ],
+    "repository": "https://github.com/AccessKit/accesskit",
+    "commit": "5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3",
+    "path_in_vcs": "platforms/windows",
+    "existing_files": []
+  },
+  {
+    "name": "accesskit_winit",
+    "version": "0.29.2",
+    "license": "Apache-2.0",
+    "authors": [
+      "The AccessKit contributors"
+    ],
+    "repository": "https://github.com/AccessKit/accesskit",
+    "commit": "5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3",
+    "path_in_vcs": "platforms/winit",
+    "existing_files": []
+  },
+  {
+    "name": "cavalier_contours",
+    "version": "0.9.0",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Buck McCready <jbuckmccready@gmail.com>"
+    ],
+    "repository": "https://github.com/jbuckmccready/cavalier_contours",
+    "commit": "22887a824d22cd8ab50968a551f34cdb4508127f",
+    "path_in_vcs": "cavalier_contours",
+    "existing_files": []
+  },
+  {
+    "name": "clipboard-win",
+    "version": "5.4.3",
+    "license": "BSL-1.0",
+    "authors": [
+      "Douman <douman@gmx.se>"
+    ],
+    "repository": "https://github.com/DoumanAsh/clipboard-win",
+    "commit": "ed27008ae5d1f10cfbb266de039f0fb35fd05a56",
+    "path_in_vcs": "",
+    "existing_files": []
+  },
+  {
+    "name": "ecolor",
+    "version": "0.33.3",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>",
+      "Andreas Reich <reichandreas@gmx.de>"
+    ],
+    "repository": "https://github.com/emilk/egui",
+    "commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+    "path_in_vcs": "crates/ecolor",
+    "existing_files": []
+  },
+  {
+    "name": "eframe",
+    "version": "0.33.3",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+    ],
+    "repository": "https://github.com/emilk/egui/tree/main/crates/eframe",
+    "commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+    "path_in_vcs": "crates/eframe",
+    "existing_files": []
+  },
+  {
+    "name": "egui",
+    "version": "0.33.3",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+    ],
+    "repository": "https://github.com/emilk/egui",
+    "commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+    "path_in_vcs": "crates/egui",
+    "existing_files": []
+  },
+  {
+    "name": "egui-winit",
+    "version": "0.33.3",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+    ],
+    "repository": "https://github.com/emilk/egui/tree/main/crates/egui-winit",
+    "commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+    "path_in_vcs": "crates/egui-winit",
+    "existing_files": []
+  },
+  {
+    "name": "egui_glow",
+    "version": "0.33.3",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+    ],
+    "repository": "https://github.com/emilk/egui/tree/main/crates/egui_glow",
+    "commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+    "path_in_vcs": "crates/egui_glow",
+    "existing_files": []
+  },
+  {
+    "name": "emath",
+    "version": "0.33.3",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+    ],
+    "repository": "https://github.com/emilk/egui/tree/main/crates/emath",
+    "commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+    "path_in_vcs": "crates/emath",
+    "existing_files": []
+  },
+  {
+    "name": "epaint",
+    "version": "0.33.3",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+    ],
+    "repository": "https://github.com/emilk/egui/tree/main/crates/epaint",
+    "commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+    "path_in_vcs": "crates/epaint",
+    "existing_files": []
+  },
+  {
+    "name": "epaint_default_fonts",
+    "version": "0.33.3",
+    "license": "(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0",
+    "authors": [
+      "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"
+    ],
+    "repository": "https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts",
+    "commit": "44cdd653e2317d300fb8a6c9c36b03f23991e803",
+    "path_in_vcs": "crates/epaint_default_fonts",
+    "existing_files": [
+      "emoji-icon-font-mit-license.txt",
+      "Hack-Regular.txt",
+      "OFL.txt",
+      "UFL.txt"
+    ]
+  },
+  {
+    "name": "geo",
+    "version": "0.31.0",
+    "license": "MIT OR Apache-2.0",
+    "authors": [],
+    "repository": "https://github.com/georust/geo",
+    "commit": "daf0515b0317b93480020a8cfb1dc7b46a4526ad",
+    "path_in_vcs": "geo",
+    "existing_files": []
+  },
+  {
+    "name": "gl_generator",
+    "version": "0.14.0",
+    "license": "Apache-2.0",
+    "authors": [
+      "Brendan Zabarauskas <bjzaba@yahoo.com.au>",
+      "Corey Richardson",
+      "Arseny Kapoulkine"
+    ],
+    "repository": "https://github.com/brendanzab/gl-rs/",
+    "commit": "ea503e8d5fb6d73c6030e6191ce738cd3bf3433e",
+    "path_in_vcs": null,
+    "existing_files": []
+  },
+  {
+    "name": "i_overlay",
+    "version": "4.0.7",
+    "license": "MIT",
+    "authors": [
+      "Nail Sharipov <nailxsharipov@gmail.com>"
+    ],
+    "repository": "https://github.com/iShape-Rust/iOverlay",
+    "commit": "a071220dfc6095edb82426b880a4019db3ea67b5",
+    "path_in_vcs": "iOverlay",
+    "existing_files": []
+  },
+  {
+    "name": "khronos_api",
+    "version": "3.1.0",
+    "license": "Apache-2.0",
+    "authors": [
+      "Brendan Zabarauskas <bjzaba@yahoo.com.au>",
+      "Corey Richardson",
+      "Arseny Kapoulkine",
+      "Pierre Krieger <pierre.krieger1708@gmail.com>"
+    ],
+    "repository": "https://github.com/brendanzab/gl-rs/",
+    "commit": "f150967b1c44ae888e6676f93f639ebc82771bdc",
+    "path_in_vcs": null,
+    "existing_files": []
+  },
+  {
+    "name": "profiling",
+    "version": "1.0.18",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Philip Degarmo <aclysma@gmail.com>"
+    ],
+    "repository": "https://github.com/aclysma/profiling",
+    "commit": "8271551172eb6fa4cba47369aedd93790c623df9",
+    "path_in_vcs": "profiling",
+    "existing_files": []
+  },
+  {
+    "name": "rstar",
+    "version": "0.12.2",
+    "license": "MIT OR Apache-2.0",
+    "authors": [
+      "Stefan Altmayer <stoeoef@gmail.com>",
+      "The Georust Developers <mods@georust.org>"
+    ],
+    "repository": "https://github.com/georust/rstar",
+    "commit": "c8c5bf9e41468281d030869d409e3f67f1aaf5b7",
+    "path_in_vcs": "rstar",
+    "existing_files": []
+  }
+]

@@ -51,7 +51,7 @@ fn straight_column_alternates_rails_with_bounded_peak_advance() {
     let result = engine::generate(&p).unwrap();
     assert_eq!(
         result.iter().filter(|s| s.command == Command::Jump).count(),
-        1
+        0 // The column starts at the machine origin; zero jumps are normalized away.
     );
     let points: Vec<_> = result
         .iter()
@@ -103,13 +103,22 @@ fn tapered_and_curved_columns_have_local_direction_and_inner_shortening() {
     let last = stations.last().unwrap();
     assert!((last.0.distance(last.1) - 6.).abs() < 1e-8);
     let output = engine::generate(&project(arc())).unwrap();
+    for (a, b) in engine::satin_stations(&arc(), 0.4).unwrap() {
+        for point in [a, b] {
+            assert!((7.95..=12.000001).contains(&point.x.hypot(point.y)));
+        }
+    }
     let mut previous = Point::default();
     let mut diagonal = false;
     let mut inset = 0;
     for s in output {
         if s.command == Command::Stitch {
             let radius = s.x.hypot(s.y);
-            assert!((7.95..=12.000001).contains(&radius), "radius={radius}");
+            // A quantized endpoint moves by at most sqrt(2)*0.05mm.
+            assert!(
+                (7.95 - 0.071..=12. + 0.071).contains(&radius),
+                "radius={radius}"
+            );
             if (8.3..9.).contains(&radius) {
                 inset += 1;
             }
@@ -218,11 +227,34 @@ fn column_density_underlay_colors_and_quantized_length_constraints() {
         let mut second = p.objects[0].clone();
         second.id = 2;
         second.color = [200, 30, 30];
+        // Keep two visible legacy columns for this codec/length assertion.
+        // Coincident duplicates are now intentionally removed by layer planning.
+        let column = second.satin_column.as_mut().unwrap();
+        for point in column.left.iter_mut().chain(column.right.iter_mut()) {
+            point.x += 100.;
+        }
         p.objects.push(second);
-        let generated = engine::generate(&p).unwrap();
-        let decoded = dst::decode(&dst::encode(&generated, "columns").unwrap()).unwrap();
+        let plan = engine::generate_plan(&p).unwrap();
+        let mut previous = Point::default();
+        for (stitch, meta) in plan.stitches.iter().zip(&plan.metadata) {
+            if stitch.command == Command::Stitch {
+                let limit = if meta.role == embroidery_lab::StitchRole::Underlay {
+                    p.objects[0].settings.underlay_length_mm
+                } else {
+                    maximum
+                };
+                assert!(previous.distance(stitch.point()) <= limit + 1e-8);
+            }
+            if matches!(stitch.command, Command::Stitch | Command::Jump) {
+                previous = stitch.point();
+            }
+        }
+        let decoded = dst::decode(&dst::encode(&plan.stitches, "columns").unwrap()).unwrap();
         assert_eq!(dst::stats(&decoded).color_changes, 1);
-        assert!(dst::stats(&decoded).max_stitch_mm <= maximum + 1e-8);
+        assert!(
+            dst::stats(&decoded).max_stitch_mm
+                <= maximum.max(p.objects[0].settings.underlay_length_mm) + 1e-8
+        );
         assert_eq!(decoded.last().unwrap().command, Command::End);
     }
 }

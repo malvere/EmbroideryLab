@@ -34,7 +34,7 @@ fn rotate(p: Point, angle: f64) -> Point {
         p.x * angle.sin() + p.y * angle.cos(),
     )
 }
-fn assert_no_hole_sewing(stitches: &[embroidery_lab::Stitch], angle: f64) {
+fn assert_no_hole_sewing(stitches: &[embroidery_lab::Stitch], angle: f64, grid_band: f64) {
     let mut previous = Point::default();
     for stitch in stitches {
         if stitch.command == Command::Stitch {
@@ -45,7 +45,10 @@ fn assert_no_hole_sewing(stitches: &[embroidery_lab::Stitch], angle: f64) {
                     -angle,
                 );
                 assert!(
-                    !(p.x > 10.000001 && p.x < 19.999999 && p.y > 5.000001 && p.y < 14.999999),
+                    !(p.x > 10. + grid_band + 1e-6
+                        && p.x < 20. - grid_band - 1e-6
+                        && p.y > 5. + grid_band + 1e-6
+                        && p.y < 15. - grid_band - 1e-6),
                     "sewn hole at {p:?}"
                 );
             }
@@ -69,7 +72,7 @@ fn hole_sides_are_filled_as_continuous_blocks() {
         "hole should require block transfers, not a jump on every row: {}",
         stats.jumps
     );
-    assert_no_hole_sewing(&stitches, 0.);
+    assert_no_hole_sewing(&stitches, 0., 0.);
 }
 
 #[test]
@@ -106,7 +109,9 @@ fn rotated_block_routing_preserves_holes_and_quantized_length() {
                 .collect();
             let p = project(rings, angle, underlay);
             let stitches = engine::generate(&p).unwrap();
-            assert_no_hole_sewing(&stitches, angle);
+            // Shared machine plans are now quantized before preview. Each
+            // endpoint moves at most sqrt(2)*0.05mm on the DST grid.
+            assert_no_hole_sewing(&stitches, angle, 0.071);
             let decoded = dst::decode(&dst::encode(&stitches, "route").unwrap()).unwrap();
             assert!(dst::stats(&decoded).max_stitch_mm <= 3.5 + 1e-8);
             assert_eq!(decoded.last().unwrap().command, Command::End);

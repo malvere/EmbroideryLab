@@ -252,8 +252,20 @@ fn border_inference_is_explicit_and_matches_color_mask() {
     };
     let explicit = import::load_image_with_options(&path, 64., &setting).unwrap();
     assert_eq!(
-        serde_json::to_string(&inferred).unwrap(),
-        serde_json::to_string(&explicit).unwrap()
+        serde_json::to_string(&inferred.objects).unwrap(),
+        serde_json::to_string(&explicit.objects).unwrap()
+    );
+    // Equivalent masks produce the same geometry; schema v5 deliberately
+    // retains the distinct user decisions rather than erasing the recipe.
+    assert_eq!(inferred.width_mm, explicit.width_mm);
+    assert_eq!(inferred.source_image, explicit.source_image);
+    assert_eq!(
+        inferred.raster_recipe.as_ref().unwrap().options.background,
+        BackgroundMode::Border { tolerance: 4. }
+    );
+    assert_eq!(
+        explicit.raster_recipe.as_ref().unwrap().options.background,
+        setting.background
     );
     assert_eq!(inferred.objects.len(), 1);
 }

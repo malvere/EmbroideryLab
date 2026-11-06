@@ -1,8 +1,22 @@
-//! Clean independent baseline generators. Complex fill uses rotated even-odd
-//! scanline clipping; transfers crossing a hole remain non-sewing jumps.
+//! Deterministic generation from editable millimetre geometry. Complex fill
+//! uses rotated even-odd clipping; protected holes retain non-sewing transfers.
+//! Annotated passes are normalized once for preview, diagnostics and export.
 use crate::model::*;
+#[path = "fill_geometry.rs"]
+pub(crate) mod fill_geometry;
+#[path = "layering.rs"]
+pub(crate) mod layering;
+#[path = "travel.rs"]
+mod travel;
 const MAX_COMMANDS: usize = 1_000_000;
 const MAX_SPANS: usize = 250_000;
+type SewingSegment = (Point, Point, StitchKind);
+#[derive(Clone, Copy)]
+struct PassOptions {
+    modern_satin: bool,
+    role: StitchRole,
+    initial_jump: bool,
+}
 
 fn rotate(p: Point, angle: f64) -> Point {
     let (c, s) = (angle.cos(), angle.sin());
@@ -61,6 +75,52 @@ fn safe_connector(a: Point, b: Point, rings: &[Vec<Point>]) -> bool {
                 length > 1e-9 && (c.distance(middle) + middle.distance(d) - length).abs() < 1e-8
             })
     })
+}
+
+/// Diagnostic containment tolerance is the maximum endpoint displacement on
+/// the 0.1mm grid (sqrt(2)*0.05mm), plus numerical slack. It is independent of
+/// line thickness in either renderer.
+pub(crate) fn diagnostic_regions(
+    object: &Object,
+    role: StitchRole,
+    layering: Option<&layering::LayeringPlan<'_>>,
+) -> Result<Vec<Vec<Vec<Point>>>, String> {
+    use geo::Buffer;
+    let rings = object.flattened_contours();
+    let angle = if object.settings.auto_angle {
+        automatic_angle_choice(
+            &rings,
+            object.settings.spacing_mm,
+            object.settings.length_mm,
+        )
+        .0
+    } else {
+        object.settings.angle_deg
+    };
+    fill_geometry::components(&rings)?
+        .iter()
+        .map(|component| {
+            let area = if role == StitchRole::Underlay {
+                fill_geometry::inset(component, object.settings.underlay_inset_mm)?
+            } else if object.settings.kind == StitchKind::Tatami {
+                fill_geometry::compensated(component, angle, object.settings.pull_comp_mm)?
+            } else {
+                geo::MultiPolygon::new(vec![component.clone()])
+            };
+            let area = if let Some(layering) = layering {
+                layering.clip(object, &area)?
+            } else {
+                area
+            };
+            Ok(fill_geometry::rings(&area.buffer(0.071)))
+        })
+        .collect()
+}
+pub(crate) fn diagnostic_connector(a: Point, b: Point, regions: &[Vec<Vec<Point>>]) -> bool {
+    regions.iter().any(|rings| safe_connector(a, b, rings))
+}
+pub(crate) fn diagnostic_inside(point: Point, rings: &[Vec<Point>]) -> bool {
+    inside(point, rings)
 }
 
 struct ArcRail<'a> {
@@ -265,6 +325,11 @@ pub fn satin_stations(column: &SatinColumn, spacing: f64) -> Result<Vec<(Point, 
             left.sample(t),
             right.sample(map_satin_fraction(&anchors, t)),
         );
+        if pair.0.distance(pair.1) > 12. + 1e-8 {
+            return Err(
+                "Satin width exceeds 12mm; split the column constructively or use Tatami".into(),
+            );
+        }
         if pair.0.distance(pair.1) < 0.15 - 1e-9 || !safe_connector(pair.0, pair.1, &rings) {
             return Err("Satin correspondence leaves the column or width is below 0.15mm; split or correct rails".into());
         }
@@ -387,7 +452,7 @@ pub fn satin_underlay_paths(
 }
 
 fn append_underlay(
-    segments: &mut Vec<(Point, Point, StitchKind)>,
+    segments: &mut Vec<SewingSegment>,
     path: &[Point],
     maximum: f64,
     rings: &[Vec<Point>],
@@ -428,8 +493,12 @@ fn paired_satin_segments(
     settings: &Settings,
     rings: &[Vec<Point>],
     modern: bool,
-) -> Result<Vec<(Point, Point, StitchKind)>, String> {
+) -> Result<(Vec<SewingSegment>, bool), String> {
     let stations = satin_stations(column, settings.spacing_mm)?;
+    let limited_inset = (settings.edge_underlay || settings.zigzag_underlay)
+        && stations
+            .iter()
+            .any(|(a, b)| a.distance(*b) < 2. * settings.underlay_inset_mm + 0.1);
     let mut segments = Vec::new();
     if settings.underlay || settings.edge_underlay || settings.zigzag_underlay {
         for path in satin_underlay_paths(column, settings)? {
@@ -437,7 +506,7 @@ fn paired_satin_segments(
                 &mut segments,
                 &path,
                 if modern {
-                    (settings.underlay_length_mm - 0.15).min(settings.length_mm - 0.15)
+                    (settings.underlay_length_mm - 0.15).max(0.15)
                 } else {
                     (settings.length_mm - 0.15).min(2.)
                 },
@@ -446,6 +515,11 @@ fn paired_satin_segments(
         }
     }
     let mut contacts = [0_usize; 2];
+    let exterior_side = if column.closed {
+        usize::from(signed_area(&column.right).abs() > signed_area(&column.left).abs())
+    } else {
+        0
+    };
     let lengths: [f64; 2] = [&column.left, &column.right]
         .map(|rail| rail.windows(2).map(|p| p[0].distance(p[1])).sum());
     let mut prior: [Option<Point>; 2] = [None, None];
@@ -470,7 +544,12 @@ fn paired_satin_segments(
             let inset = edge.lerp(opposite, (width * 0.18).min(0.8) / width);
             (inset, inset)
         } else {
-            (edge.lerp(opposite, -settings.pull_comp_mm / width), edge)
+            let compensation = if column.closed && side != exterior_side {
+                0.
+            } else {
+                settings.pull_comp_mm
+            };
+            (edge.lerp(opposite, -compensation / width), edge)
         }
     };
     let first = usize::from(column.first_right);
@@ -497,32 +576,214 @@ fn paired_satin_segments(
     };
     let (final_point, _) = endpoint(last, 1 - last_side, &mut contacts, &mut prior, true);
     segments.push((previous, final_point, StitchKind::Satin));
-    Ok(segments)
+    Ok((segments, limited_inset))
 }
 
-/// PCA direction of the input boundary. A heuristic, not a digitizer's semantic
-/// understanding of a satin column or an estimate of fabric distortion.
-pub fn automatic_angle(rings: &[Vec<Point>]) -> f64 {
-    let points: Vec<_> = rings.iter().flatten().collect();
-    if points.is_empty() {
-        return 0.;
+/// Conservative filled envelope through the same certified rail stations used
+/// for top stitches. The protected inner rail of a closed column stays fixed.
+/// Keep the source polygon as well: stations can shortcut a curved boundary,
+/// but that must not hide adjacency or a neighboring compensated component.
+fn satin_compensation_domain(
+    column: &SatinColumn,
+    settings: &Settings,
+    source: &[geo::Polygon<f64>],
+) -> Result<geo::MultiPolygon<f64>, String> {
+    let mut effective = source.to_vec();
+    if settings.pull_comp_mm == 0. {
+        return Ok(geo::MultiPolygon::new(effective));
     }
-    let n = points.len() as f64;
-    let mx = points.iter().map(|p| p.x).sum::<f64>() / n;
-    let my = points.iter().map(|p| p.y).sum::<f64>() / n;
-    let xx = points.iter().map(|p| (p.x - mx).powi(2)).sum::<f64>();
-    let yy = points.iter().map(|p| (p.y - my).powi(2)).sum::<f64>();
-    let xy = points.iter().map(|p| (p.x - mx) * (p.y - my)).sum::<f64>();
-    (0.5 * (2. * xy).atan2(xx - yy)).to_degrees()
+    let exterior_side =
+        usize::from(signed_area(&column.right).abs() > signed_area(&column.left).abs());
+    let stations = satin_stations(column, settings.spacing_mm)?;
+    let mut rails = [
+        Vec::with_capacity(stations.len()),
+        Vec::with_capacity(stations.len()),
+    ];
+    for (left, right) in stations {
+        for (side, rail) in rails.iter_mut().enumerate() {
+            let (edge, opposite) = if side == 0 {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            let amount = if column.closed && side != exterior_side {
+                0.
+            } else {
+                settings.pull_comp_mm
+            };
+            rail.push(edge.lerp(opposite, -amount / edge.distance(opposite)));
+        }
+    }
+    let rings = if column.closed {
+        for rail in &mut rails {
+            if rail.first() == rail.last() {
+                rail.pop();
+            }
+        }
+        Vec::from(rails)
+    } else {
+        vec![
+            rails[0]
+                .iter()
+                .copied()
+                .chain(rails[1].iter().rev().copied())
+                .collect(),
+        ]
+    };
+    effective.extend(fill_geometry::components(&rings).map_err(|e| format!(
+        "Cannot certify compensated Satin gaps: {e}. Reduce pull compensation or split the column constructively"
+    ))?);
+    Ok(geo::MultiPolygon::new(effective))
 }
 
-/// Return alternating scanline spans, with holes removed. Compensation extends
-/// only the two exterior span ends; internal holes keep their original boundary.
+/// Bounded fill-direction search seeded by filled-area moments (including holes
+/// and islands). Adding collinear boundary vertices cannot bias its direction.
+pub fn automatic_angle(rings: &[Vec<Point>]) -> f64 {
+    automatic_angle_choice(rings, 0.4, 3.5).0
+}
+
+/// Evaluate a small deterministic direction set with the active physical
+/// spacing and length. The manual angle never calls this estimator.
+fn automatic_angle_choice(rings: &[Vec<Point>], spacing: f64, length: f64) -> (f64, bool) {
+    // Work budgets and scores use geometric corners, so merely adding points
+    // to an existing straight edge cannot change the selected strategy.
+    let canonical_rings: Vec<Vec<Point>> = rings
+        .iter()
+        .map(|ring| {
+            if ring.len() < 3 {
+                return ring.clone();
+            }
+            ring.iter()
+                .enumerate()
+                .filter_map(|(index, &point)| {
+                    let before = ring[(index + ring.len() - 1) % ring.len()];
+                    let after = ring[(index + 1) % ring.len()];
+                    let (x, y) = (point.x - before.x, point.y - before.y);
+                    let (u, v) = (after.x - point.x, after.y - point.y);
+                    let collinear = (x * v - y * u).abs() <= 1e-10 * (x.hypot(y) + u.hypot(v))
+                        && x * u + y * v >= 0.;
+                    (!collinear).then_some(point)
+                })
+                .collect()
+        })
+        .collect();
+    let rings = canonical_rings.as_slice();
+    let principal = fill_geometry::area_angle(rings).unwrap_or(0.);
+    let canonical = |angle: f64| {
+        let angle = angle.rem_euclid(180.);
+        if angle < 1e-8 || 180. - angle < 1e-8 {
+            0.
+        } else {
+            angle
+        }
+    };
+    let fallback = canonical(principal);
+    if !spacing.is_finite() || spacing <= 0. || !length.is_finite() || length <= 0.15 {
+        return (fallback, true);
+    }
+    let nodes = rings.iter().map(Vec::len).sum::<usize>();
+    let bounds = rings.iter().flatten().fold(
+        (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(x0, y0, x1, y1), p| (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)),
+    );
+    let diameter = (bounds.2 - bounds.0).hypot(bounds.3 - bounds.1);
+    if !diameter.is_finite() || nodes == 0 {
+        return (fallback, true);
+    }
+    let mut candidates = vec![fallback, canonical(principal + 90.), 0., 45., 90., 135.];
+    candidates.sort_by(f64::total_cmp);
+    candidates.dedup_by(|a, b| (*a - *b).abs() < 1e-8);
+    // Bound the complete candidate search, not just each scan individually.
+    if nodes
+        .saturating_mul((diameter / spacing).ceil() as usize)
+        .saturating_mul(candidates.len())
+        > 4_000_000
+    {
+        return (fallback, true);
+    }
+    let cursor = Point::new((bounds.0 + bounds.2) * 0.5, (bounds.1 + bounds.3) * 0.5);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let maximum = (length - 0.15).max(0.15);
+    let mut work = 0usize;
+    let mut best: Option<(f64, f64)> = None;
+    for candidate in candidates {
+        let Ok(raw) = raw_fill_spans(rings, candidate, spacing, None) else {
+            return (fallback, true);
+        };
+        work = work.saturating_add(raw.len().saturating_mul(nodes).saturating_mul(12));
+        if work > 4_000_000 {
+            return (fallback, true);
+        }
+        let Ok(spans) =
+            routed_fill_spans(rings, candidate, spacing, cursor, maximum, true, &cancel)
+        else {
+            return (fallback, true);
+        };
+        let travel = fill_travel_cost(&spans, rings, cursor, maximum, true);
+        let rows_and_short_spans = spans
+            .iter()
+            .map(|(a, b)| {
+                let distance = a.distance(*b);
+                distance / maximum + 0.7 + 2. * (1. - distance / maximum).max(0.)
+            })
+            .sum::<f64>();
+        let score = travel.jump_mm * 2. + travel.jump_records as f64 * 8. + rows_and_short_spans;
+        // Quantizing the score suppresses irrelevant arithmetic differences
+        // from collinear edge subdivision. Ties choose the smaller angle.
+        let score = (score * 100_000.).round() / 100_000.;
+        if best.is_none_or(|(old, _)| score < old) {
+            best = Some((score, candidate));
+        }
+    }
+    (best.map_or(fallback, |(_, angle)| angle), false)
+}
+
+/// Return alternating scanline spans, with holes removed. Directional pull
+/// compensation expands each connected exterior separately and subtracts its
+/// unchanged protected holes; it never edits the source contour.
 pub fn fill_spans(
     rings: &[Vec<Point>],
     angle_deg: f64,
     spacing: f64,
     compensation: f64,
+) -> Result<Vec<(Point, Point)>, String> {
+    if spacing <= 0. || !spacing.is_finite() || !angle_deg.is_finite() {
+        return Err("Invalid scanline spacing or angle".into());
+    }
+    if !compensation.is_finite() || !(0.0..=2.).contains(&compensation) {
+        return Err("Fill compensation must be 0–2mm per side".into());
+    }
+    if compensation > 0. {
+        let mut spans = Vec::new();
+        let mut guard = fill_geometry::CompensationGuard::new(true);
+        for (index, component) in fill_geometry::components(rings)?.into_iter().enumerate() {
+            let compensated = fill_geometry::compensated(&component, angle_deg, compensation)?;
+            guard.register("Fill", index, &component, &compensated, true)?;
+            spans.extend(raw_fill_spans(
+                &fill_geometry::rings(&compensated),
+                angle_deg,
+                spacing,
+                None,
+            )?);
+            if spans.len() > MAX_SPANS {
+                return Err("Fill exceeds 250,000 spans".into());
+            }
+        }
+        return Ok(spans);
+    }
+    raw_fill_spans(rings, angle_deg, spacing, None)
+}
+
+fn raw_fill_spans(
+    rings: &[Vec<Point>],
+    angle_deg: f64,
+    spacing: f64,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<(Point, Point)>, String> {
     if spacing <= 0. || !spacing.is_finite() || !angle_deg.is_finite() {
         return Err("Invalid scanline spacing or angle".into());
@@ -554,7 +815,16 @@ pub fn fill_spans(
         );
     }
     for row in 0..count {
-        let y = min_y + spacing * (row as f64 + 0.5);
+        if row % 64 == 0 && cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Err("Generation cancelled".into());
+        }
+        // A thin component still receives one central row. It must not vanish
+        // because its height is less than the first half-spacing offset.
+        let y = if max_y - min_y < spacing {
+            (min_y + max_y) * 0.5
+        } else {
+            min_y + spacing * (row as f64 + 0.5)
+        };
         if y >= max_y {
             break;
         }
@@ -572,18 +842,11 @@ pub fn fill_spans(
         }
         xs.sort_by(f64::total_cmp);
         let mut row_spans = Vec::new();
-        let last = xs.len().saturating_sub(2);
-        for (i, pair) in xs.as_chunks::<2>().0.iter().enumerate() {
-            let mut left = pair[0];
-            let mut right = pair[1];
-            if right - left < 0.05 {
+        for pair in xs.as_chunks::<2>().0 {
+            let left = pair[0];
+            let right = pair[1];
+            if right - left < 1e-7 {
                 continue;
-            }
-            if i == 0 {
-                left -= compensation;
-            }
-            if i * 2 == last {
-                right += compensation;
             }
             let (a, b) = (
                 rotate(Point::new(left, y), angle),
@@ -644,16 +907,15 @@ fn fill_travel_cost(
     for (index, &(a, b)) in spans.iter().enumerate() {
         let distance = cursor.distance(a);
         if (index == 0 && initial_jump)
-            || (distance > 0.05 && (distance > max_length || !safe_connector(cursor, a, rings)))
+            || (distance > 1e-9 && (distance > max_length || !safe_connector(cursor, a, rings)))
         {
             add_jump_cost(&mut cost, cursor, a);
             cursor = a;
-        } else if distance > 0.05 {
+        } else if distance > 1e-9 {
             cursor = a;
         }
-        // Builder::line omits movements shorter than 0.05mm. Longer spans
-        // always finish exactly at their endpoint, including Tatami tails.
-        if cursor.distance(b) >= 0.05 {
+        // Span endpoints are intentional and retained before quantization.
+        if cursor.distance(b) > 1e-9 {
             cursor = b;
         }
     }
@@ -668,10 +930,10 @@ fn routed_fill_spans(
     rings: &[Vec<Point>],
     angle_deg: f64,
     spacing: f64,
-    compensation: f64,
     mut cursor: Point,
     max_length: f64,
     initial_jump: bool,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Vec<(Point, Point)>, String> {
     struct Span {
         a: Point,
@@ -681,7 +943,9 @@ fn routed_fill_spans(
         y: f64,
     }
     let angle = angle_deg.to_radians();
-    let raw = fill_spans(rings, angle_deg, spacing, compensation)?;
+    // Callers supply the already selected top/underlay geometry. Routing never
+    // changes artwork or applies a second technological compensation.
+    let raw = raw_fill_spans(rings, angle_deg, spacing, Some(cancel))?;
     let Some(&(final_start, final_end)) = raw.last() else {
         return Ok(raw);
     };
@@ -716,6 +980,9 @@ fn routed_fill_spans(
     let mut previous: Vec<Span> = Vec::new();
     let mut previous_chains: Vec<usize> = Vec::new();
     for mut row in rows {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Generation cancelled".into());
+        }
         row.sort_by(|a, b| a.left.total_cmp(&b.left));
         let mut incoming = vec![0_usize; row.len()];
         let mut outgoing = vec![0_usize; previous.len()];
@@ -831,6 +1098,36 @@ pub fn optimize_order(project: &mut Project) {
         while end < project.objects.len() && project.objects[end].color == color {
             end += 1;
         }
+        // A same-colour block can still contain a deliberate layer dependency.
+        // Conservatively preserve the complete block when any bounds overlap;
+        // optimization remains available for proven spatially separate objects.
+        let bounds: Vec<_> = project.objects[start..end]
+            .iter()
+            .map(|object| {
+                object
+                    .flattened_contours()
+                    .into_iter()
+                    .flatten()
+                    .chain(object.running_paths.iter().flatten().copied())
+                    .fold(
+                        (
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                            f64::NEG_INFINITY,
+                        ),
+                        |(x0, y0, x1, y1), p| (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)),
+                    )
+            })
+            .collect();
+        if bounds.iter().enumerate().any(|(i, a)| {
+            bounds[i + 1..]
+                .iter()
+                .any(|b| a.0 <= b.2 && a.2 >= b.0 && a.1 <= b.3 && a.3 >= b.1)
+        }) {
+            start = end;
+            continue;
+        }
         for slot in start..end {
             let nearest = (slot..end)
                 .min_by(|&a, &b| {
@@ -893,13 +1190,82 @@ pub fn optimize_order(project: &mut Project) {
 
 struct Builder {
     out: Vec<Stitch>,
+    metadata: Vec<CommandMeta>,
+    warnings: Vec<PlanWarning>,
+    role: StitchRole,
+    pass_id: u32,
     current: Point,
     color: [u8; 3],
     object_id: u64,
     max_length: f64,
+    machine_max_length: f64,
+    trim_jump_mm: f64,
     overflow: bool,
+    tie_in_enabled: bool,
+    tie_off_enabled: bool,
+    last_sewn_start: Option<Point>,
+    last_sewn_role: StitchRole,
+    thread_active: bool,
+    future_top: travel::FutureCover,
+    future_order: usize,
+    travel_memory: travel::TravelMemory,
 }
 impl Builder {
+    fn prepare_future_top(
+        &mut self,
+        rings: &[Vec<Point>],
+        angle: f64,
+        spacing: f64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), String> {
+        self.future_top = travel::FutureCover::new(
+            raw_fill_spans(rings, angle, spacing, Some(cancel))?
+                .into_iter()
+                .map(|(a, b)| (a, b, 0)),
+        );
+        self.future_order = 0;
+        Ok(())
+    }
+    fn concealed_travel(&mut self, target: Point) -> bool {
+        let prior = if self.last_sewn_role == StitchRole::TopFill {
+            self.last_sewn_start
+        } else {
+            None
+        };
+        if !self
+            .future_top
+            .covers(self.current, target, self.future_order, prior)
+        {
+            if !self.future_top.complete() {
+                self.warn("Travel concealment analysis reached its work budget; explicit jumps preserve all top-fill segments.",Some(target));
+            }
+            return false;
+        }
+        if !self.travel_memory.allow(self.current, target) {
+            self.warn("Repeated sewn travel was replaced by an explicit jump to limit local thread accumulation.",Some(target));
+            return false;
+        }
+        true
+    }
+    fn begin_pass(&mut self, role: StitchRole) {
+        self.role = role;
+        self.pass_id = self.pass_id.saturating_add(1);
+    }
+    fn warn(&mut self, message: impl Into<String>, point: Option<Point>) {
+        let message = message.into();
+        if self
+            .warnings
+            .iter()
+            .any(|w| w.object_id == self.object_id && w.message == message)
+        {
+            return;
+        }
+        self.warnings.push(PlanWarning {
+            object_id: self.object_id,
+            point,
+            message,
+        });
+    }
     fn emit(&mut self, p: Point, command: Command) {
         if self.out.len() >= MAX_COMMANDS {
             self.overflow = true;
@@ -912,7 +1278,42 @@ impl Builder {
             color: self.color,
             object_id: self.object_id,
         });
+        self.metadata.push(CommandMeta {
+            role: match command {
+                Command::Stitch => self.role,
+                Command::Jump => StitchRole::Travel,
+                _ => StitchRole::Control,
+            },
+            pass_id: self.pass_id,
+        });
+        if command == Command::Stitch {
+            self.last_sewn_start = Some(self.current);
+            self.last_sewn_role = self.role;
+            self.thread_active = true;
+        } else if matches!(command, Command::Trim | Command::ColorChange) {
+            self.thread_active = false;
+        }
         self.current = p;
+    }
+    fn jump_to(&mut self, start: Point, next: Point, rings: &[Vec<Point>]) -> bool {
+        // A jump is not a trim. Only long transfers carry a separate explicit
+        // cut intention; exporters may leave that intention in a sidecar.
+        let cut = self.thread_active && self.current.distance(start) > self.trim_jump_mm;
+        if cut {
+            if self.tie_off_enabled
+                && let Some(prior) = self.last_sewn_start
+                && safe_connector(self.current, prior, rings)
+            {
+                self.tie(prior);
+            }
+            self.emit(self.current, Command::Trim);
+        }
+        self.emit(start, Command::Jump);
+        let tied = cut && self.tie_in_enabled && safe_connector(start, next, rings);
+        if tied {
+            self.tie(next);
+        }
+        tied
     }
     fn line(&mut self, end: Point) {
         let start = self.current;
@@ -957,10 +1358,13 @@ impl Builder {
             return;
         }
         let near = anchor.lerp(direction, (0.6 / distance).min(0.5));
+        let role = self.role;
+        self.role = StitchRole::Lock;
         self.line(near);
         self.line(anchor);
         self.line(near);
         self.line(anchor);
+        self.role = role;
     }
     fn span(
         &mut self,
@@ -969,14 +1373,23 @@ impl Builder {
         rings: &[Vec<Point>],
         tatami_phase: Option<(f64, usize)>,
         kind: StitchKind,
+        retain_endpoint: bool,
     ) {
-        if self.current.distance(start) > 0.05 {
+        if self.current.distance(start) > if retain_endpoint { 1e-9 } else { 0.05 } {
             if self.current.distance(start) <= self.max_length
                 && safe_connector(self.current, start, rings)
+                && self.concealed_travel(start)
             {
-                self.line(start);
+                let role = self.role;
+                self.role = StitchRole::Travel;
+                if retain_endpoint {
+                    self.path_line(start);
+                } else {
+                    self.line(start);
+                }
+                self.role = role;
             } else {
-                self.emit(start, Command::Jump);
+                self.jump_to(start, end, rings);
             }
         }
         if kind == StitchKind::Tatami
@@ -1009,16 +1422,26 @@ impl Builder {
                 x += if forward { step } else { -step };
             }
         }
-        self.line(end);
+        if retain_endpoint {
+            self.path_line(end);
+        } else {
+            self.line(end);
+        }
     }
     fn sew_segments(
         &mut self,
-        segments: &[(Point, Point, StitchKind)],
+        segments: &[SewingSegment],
         rings: &[Vec<Point>],
         settings: &Settings,
         angle_deg: f64,
-        modern_satin: bool,
+        options: PassOptions,
     ) -> Result<(), String> {
+        let PassOptions {
+            modern_satin,
+            role,
+            initial_jump,
+        } = options;
+        self.begin_pass(role);
         let angle = angle_deg.to_radians();
         let min_y = rings
             .iter()
@@ -1026,22 +1449,64 @@ impl Builder {
             .map(|&p| rotate(p, -angle).y)
             .fold(f64::INFINITY, f64::min);
         if let Some(&(start, end, _)) = segments.first() {
-            self.emit(start, Command::Jump);
-            if settings.tie_in {
+            let already_tied = initial_jump && self.jump_to(start, end, rings);
+            if settings.tie_in && !already_tied {
                 self.tie(end);
             }
         }
-        for &(a, z, kind) in segments {
+        let mixed_satin = segments.iter().any(|s| s.2 == StitchKind::Satin);
+        if role == StitchRole::TopFill {
+            self.future_top = travel::FutureCover::new(
+                segments
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !mixed_satin || s.2 == StitchKind::Satin)
+                    .map(|(index, &(a, z, _))| (a, z, index)),
+            );
+        }
+        for (segment_index, &(a, z, kind)) in segments.iter().enumerate() {
+            self.future_order = if role == StitchRole::Underlay {
+                0
+            } else {
+                segment_index
+            };
+            let grid = |p: Point| ((p.x * 10.).round() as i64, (p.y * 10.).round() as i64);
+            if role == StitchRole::TopFill && kind != StitchKind::Running && grid(a) == grid(z) {
+                self.warn("A top-fill span collapses on the 0.1mm machine grid; this small feature needs manual review or a larger physical size.",Some(a));
+            }
+            let segment_role = if mixed_satin && kind == StitchKind::Running {
+                StitchRole::Underlay
+            } else {
+                role
+            };
+            if self.role != segment_role
+                || (mixed_satin && segment_role == StitchRole::Underlay && self.current != a)
+            {
+                // Independent center/edge/zigzag paths are separate passes,
+                // even when object and thread colour remain the same.
+                self.begin_pass(segment_role);
+            }
             let maximum = self.max_length;
+            if segment_role == StitchRole::Underlay && (!mixed_satin || modern_satin) {
+                self.max_length =
+                    (settings.underlay_length_mm.min(self.machine_max_length) - 0.15).max(0.15);
+            }
             if modern_satin {
                 if kind == StitchKind::Running {
-                    self.max_length = maximum.min(settings.underlay_length_mm - 0.15);
+                    self.max_length =
+                        (settings.underlay_length_mm.min(self.machine_max_length) - 0.15).max(0.15);
                 }
                 if self.current != a {
-                    if safe_connector(self.current, a, rings) {
+                    if self.current.distance(a) <= self.max_length
+                        && safe_connector(self.current, a, rings)
+                        && self.concealed_travel(a)
+                    {
+                        let role = self.role;
+                        self.role = StitchRole::Travel;
                         self.path_line(a);
+                        self.role = role;
                     } else {
-                        self.emit(a, Command::Jump);
+                        self.jump_to(a, z, rings);
                     }
                 }
             }
@@ -1055,8 +1520,15 @@ impl Builder {
             };
             if modern_satin && kind == StitchKind::Running {
                 self.path_line(z);
+            } else if modern_satin && kind == StitchKind::Satin {
+                // The complete compensated diagonal was checked against the
+                // physical cap before emission. Keep a rail-to-rail top stitch;
+                // generic Builder subdivision is not constructive split-satin.
+                if self.current.distance(z) > 1e-9 {
+                    self.emit(z, Command::Stitch);
+                }
             } else {
-                self.span(a, z, rings, phase, kind);
+                self.span(a, z, rings, phase, kind, modern_satin || !mixed_satin);
             }
             self.max_length = maximum;
             if self.overflow {
@@ -1076,19 +1548,60 @@ impl Builder {
 }
 
 pub fn generate(project: &Project) -> Result<Vec<Stitch>, String> {
+    generate_plan(project).map(|plan| plan.stitches)
+}
+
+/// Plan annotations survive through diagnostics and preview, independently of
+/// machine formats which cannot store pass roles or editable object geometry.
+pub fn generate_plan(project: &Project) -> Result<MachinePlan, String> {
+    generate_plan_cancellable(project, &std::sync::atomic::AtomicBool::new(false))
+}
+
+pub fn generate_plan_cancellable(
+    project: &Project,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<MachinePlan, String> {
     project.validate_limits()?;
+    let generation_version = project.persisted_schema_version();
+    let layering = layering::LayeringPlan::new(project, cancel)?;
+    let mut intentionally_occluded = std::collections::BTreeSet::new();
     let mut b = Builder {
         out: Vec::new(),
+        metadata: Vec::new(),
+        warnings: Vec::new(),
+        role: StitchRole::TopFill,
+        pass_id: 0,
         current: Point::default(),
         color: [0; 3],
         object_id: 0,
         max_length: 3.5,
+        machine_max_length: project.machine_profile.max_stitch_mm,
+        trim_jump_mm: project.machine_profile.trim_jump_mm,
         overflow: false,
+        tie_in_enabled: false,
+        tie_off_enabled: false,
+        last_sewn_start: None,
+        last_sewn_role: StitchRole::Control,
+        thread_active: false,
+        future_top: Default::default(),
+        future_order: 0,
+        travel_memory: Default::default(),
     };
     let mut has_color = false;
     let mut work_budget = 0_usize;
+    let mut compensation_guard =
+        fill_geometry::CompensationGuard::new(project.objects.iter().any(|o| {
+            o.visible
+                && o.running_paths.is_empty()
+                && o.settings.kind != StitchKind::Running
+                && o.settings.pull_comp_mm > 0.
+        }));
     for object in project.objects.iter().filter(|o| o.visible) {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Generation cancelled".into());
+        }
         let rings = object.flattened_contours();
+        b.object_id = object.id;
         let nodes = rings.iter().map(Vec::len).sum::<usize>();
         if nodes > 100_000 {
             return Err(format!(
@@ -1104,6 +1617,7 @@ pub fn generate(project: &Project) -> Result<Vec<Stitch>, String> {
                     object.name
                 ));
             }
+            b.warn("Visible object has no stitchable geometry; add a contour or remove the empty object.",None);
             continue;
         }
         if rings.iter().any(|r| {
@@ -1136,14 +1650,20 @@ pub fn generate(project: &Project) -> Result<Vec<Stitch>, String> {
                 object.name
             ));
         }
+        let prior_color = b.color;
+        let prior_has_color = has_color;
+        let prior_thread_active = b.thread_active;
+        let prior_commands = b.out.len();
         if has_color && b.color != object.color {
             b.emit(b.current, Command::ColorChange);
         }
         b.color = object.color;
         b.object_id = object.id;
+        b.tie_in_enabled = s.tie_in;
+        b.tie_off_enabled = s.tie_off;
         // DST rounds both absolute endpoints to 0.1mm. Their relative vector
         // can grow by sqrt(2)*0.1mm, so reserve 0.15mm before subdivision.
-        b.max_length = (s.length_mm - 0.15).max(0.15);
+        b.max_length = (s.length_mm.min(project.machine_profile.max_stitch_mm) - 0.15).max(0.15);
         has_color = true;
         if !object.running_paths.is_empty() {
             // Each branch is a separate open polyline. Explicitly begin every
@@ -1157,8 +1677,12 @@ pub fn generate(project: &Project) -> Result<Vec<Stitch>, String> {
                         object.name
                     ));
                 }
-                b.emit(path[0], Command::Jump);
-                if s.tie_in {
+                if path.windows(2).any(|pair| grid(pair[0]) == grid(pair[1])) {
+                    b.warn("Running path contains bends below the 0.1mm machine grid. Editable nodes are retained, but coincident machine punctures are omitted.",path.first().copied());
+                }
+                b.begin_pass(StitchRole::TopFill);
+                let already_tied = b.jump_to(path[0], path[1], &rings);
+                if s.tie_in && !already_tied {
                     b.tie(path[1]);
                 }
                 for &end in &path[1..] {
@@ -1209,17 +1733,92 @@ pub fn generate(project: &Project) -> Result<Vec<Stitch>, String> {
                     "Project exceeds satin geometry work budget; simplify or split columns".into(),
                 );
             }
-            let modern = project.version >= 4 || column.uses_v4() || s.uses_v4();
-            let segments = paired_satin_segments(column, s, &rings, modern)
+            let modern = generation_version >= 4 || column.uses_v4() || s.uses_v4();
+            let (segments, limited_inset) = paired_satin_segments(column, s, &rings, modern)
                 .map_err(|e| format!("{}: {e}", object.name))?;
-            b.sew_segments(&segments, &rings, s, 0., modern)?;
+            if modern {
+                let maximum = s.length_mm.min(project.machine_profile.max_stitch_mm);
+                let unsplit_limit = (maximum - 0.15).max(0.15);
+                if let Some((a, z, _)) = segments.iter().find(|(a, z, kind)| {
+                    *kind == StitchKind::Satin && a.distance(*z) > unsplit_limit + 1e-8
+                }) {
+                    return Err(format!(
+                        "{}: Satin diagonal {:.2}mm exceeds the unsplit limit {:.2}mm (configured physical cap {:.2}mm, including a 0.15mm quantization reserve). Split the column constructively, increase its stitch-length cap only if the machine permits it, or use Tatami; generic midpoint subdivision is not split-satin.",
+                        object.name,
+                        a.distance(*z),
+                        unsplit_limit,
+                        maximum
+                    ));
+                }
+            }
+            if limited_inset {
+                b.warn("Underlay inset was locally limited to preserve a 0.1mm Satin cross-section in narrow sections. Review underlay and reduce inset if necessary.",rings.first().and_then(|r|r.first()).copied());
+            }
+            if compensation_guard.enabled() || layering.is_clipped(object) {
+                let components = fill_geometry::components(&rings)
+                    .map_err(|e| format!("{}: {e}", object.name))?;
+                let effective = satin_compensation_domain(column, s, &components)
+                    .map_err(|e| format!("{}: {e}", object.name))?;
+                for (index, component) in components.iter().enumerate() {
+                    compensation_guard.register(
+                        &object.name,
+                        index,
+                        component,
+                        &effective,
+                        s.pull_comp_mm > 0.,
+                    )?;
+                }
+                if layering.is_clipped(object) {
+                    let sewn = layering::satin_top_domain(object, generation_version)?;
+                    let visible = layering.clip(object, &sewn)?;
+                    if layering::LayeringPlan::changed(&sewn, &visible) {
+                        if visible.0.is_empty() {
+                            b.warn("Layering: this object is fully hidden by later filled layers; its top and underlay are intentionally omitted. Change layer order or the hidden-fill policy to sew it.",layering::LayeringPlan::first_point(&sewn));
+                            intentionally_occluded.insert(object as *const Object as usize);
+                            b.out.truncate(prior_commands);
+                            b.metadata.truncate(prior_commands);
+                            b.color = prior_color;
+                            b.thread_active = prior_thread_active;
+                            has_color = prior_has_color;
+                            continue;
+                        }
+                        return Err(format!(
+                            "{}: a later filled layer partially covers this Satin column. Constructive rails cannot be pruned safely; move the column above that layer, convert it to Tatami, or disable hidden-fill removal",
+                            object.name
+                        ));
+                    }
+                }
+            }
+            let trim_threshold = b.trim_jump_mm;
+            // v1–v3 simple columns retain their recorded underlay/thread policy.
+            // Advanced columns and edited profiles use the current planner.
+            if !modern {
+                b.trim_jump_mm = f64::INFINITY;
+            }
+            b.sew_segments(
+                &segments,
+                &rings,
+                s,
+                0.,
+                PassOptions {
+                    modern_satin: modern,
+                    role: StitchRole::TopFill,
+                    initial_jump: true,
+                },
+            )?;
+            b.trim_jump_mm = trim_threshold;
             continue;
         }
         let angle = if s.auto_angle {
-            automatic_angle(&rings)
+            let (angle, limited) = automatic_angle_choice(&rings, s.spacing_mm, s.length_mm);
+            if limited {
+                b.warn("Automatic direction search reached its work budget; using stable filled-area principal direction. Set a manual angle to override it.",rings.first().and_then(|r|r.first()).copied());
+            }
+            angle
         } else {
             s.angle_deg
         };
+        let underlay_angle = s.underlay_angle_deg.unwrap_or(angle + 90.);
         if s.kind != StitchKind::Running {
             let estimated_work = |angle: f64, spacing: f64| {
                 let angle = angle.to_radians();
@@ -1233,9 +1832,9 @@ pub fn generate(project: &Project) -> Result<Vec<Stitch>, String> {
                 (((hi - lo) / spacing).ceil() as usize).saturating_mul(nodes)
             };
             work_budget = work_budget.saturating_add(estimated_work(angle, s.spacing_mm));
-            if s.underlay {
+            if s.underlay || s.zigzag_underlay {
                 work_budget = work_budget
-                    .saturating_add(estimated_work(angle + 90., (s.spacing_mm * 5.).max(1.5)));
+                    .saturating_add(estimated_work(underlay_angle, s.underlay_spacing_mm));
             }
             if work_budget > 100_000_000 {
                 return Err(
@@ -1244,71 +1843,226 @@ pub fn generate(project: &Project) -> Result<Vec<Stitch>, String> {
                 );
             }
         }
-        let mut segments = Vec::new();
-        if s.underlay && s.kind != StitchKind::Running {
-            segments.extend(
-                routed_fill_spans(
-                    &rings,
-                    angle + 90.,
-                    (s.spacing_mm * 5.).max(1.5),
-                    0.,
-                    b.current,
-                    b.max_length,
-                    true,
-                )?
-                .into_iter()
-                .map(|(a, z)| (a, z, StitchKind::Running)),
-            );
+        if s.kind == StitchKind::Satin {
+            return Err(format!(
+                "{}: Satin requires constructive paired rails; use Create satin copy or choose Tatami",
+                object.name
+            ));
         }
-        // The sparse underlay may end in a sub-0.05mm span omitted by the
-        // emitter. Carry its real cursor into the top-fill planner as well.
-        let mut fill_cursor = segments.first().map_or(b.current, |&(a, _, _)| a);
-        for &(a, z, _) in &segments {
-            if fill_cursor.distance(a) > 0.05 {
-                fill_cursor = a;
+        if s.kind == StitchKind::Running {
+            let mut segments = Vec::new();
+            for ring in &rings {
+                for (&a, &z) in ring
+                    .iter()
+                    .zip(ring.iter().cycle().skip(1))
+                    .take(ring.len())
+                {
+                    segments.push((a, z, StitchKind::Running));
+                }
             }
-            if fill_cursor.distance(z) >= 0.05 {
-                fill_cursor = z;
-            }
+            b.sew_segments(
+                &segments,
+                &rings,
+                s,
+                angle,
+                PassOptions {
+                    modern_satin: false,
+                    role: StitchRole::TopFill,
+                    initial_jump: true,
+                },
+            )?;
+            continue;
         }
-        match s.kind {
-            StitchKind::Running => {
-                for ring in &rings {
-                    for (&a, &z) in ring
-                        .iter()
-                        .zip(ring.iter().cycle().skip(1))
-                        .take(ring.len())
-                    {
-                        segments.push((a, z, StitchKind::Running));
+        let components =
+            fill_geometry::components(&rings).map_err(|e| format!("{}: {e}", object.name))?;
+        let mut retained_components = 0usize;
+        let mut hidden_components = 0usize;
+        for (index, component) in components.into_iter().enumerate() {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("Generation cancelled".into());
+            }
+            let original = fill_geometry::polygon_rings(&component);
+            let compensated = fill_geometry::compensated(&component, angle, s.pull_comp_mm)?;
+            compensation_guard.register(
+                &object.name,
+                index,
+                &component,
+                &compensated,
+                s.pull_comp_mm > 0.,
+            )?;
+            let visible = layering.clip(object, &compensated)?;
+            if visible.0.is_empty() {
+                hidden_components += 1;
+                b.warn("Layering: this component is fully hidden by later filled layers; its top and underlay are intentionally omitted. Change layer order or the hidden-fill policy to sew it.",original.first().and_then(|r|r.first()).copied());
+                continue;
+            }
+            retained_components += 1;
+            let allowed = fill_geometry::rings(&visible);
+            b.prepare_future_top(&allowed, angle, s.spacing_mm, cancel)?;
+            let mut underlay_done = false;
+            if s.underlay || s.edge_underlay || s.zigzag_underlay {
+                let inset = layering.clip(
+                    object,
+                    &fill_geometry::inset(&component, s.underlay_inset_mm)?,
+                )?;
+                let underlay_rings = fill_geometry::rings(&inset);
+                if underlay_rings.is_empty() {
+                    b.warn("Underlay inset removes this narrow component; underlay skipped. Reduce inset or choose a thinner-detail profile.",original.first().and_then(|r|r.first()).copied());
+                } else {
+                    let mut segments = Vec::new();
+                    if s.edge_underlay {
+                        for ring in &underlay_rings {
+                            for (&a, &z) in ring
+                                .iter()
+                                .zip(ring.iter().cycle().skip(1))
+                                .take(ring.len())
+                            {
+                                segments.push((a, z, StitchKind::Running));
+                            }
+                        }
+                    }
+                    let edge_count = segments.len();
+                    if s.underlay || s.zigzag_underlay {
+                        segments.extend(
+                            routed_fill_spans(
+                                &underlay_rings,
+                                underlay_angle,
+                                s.underlay_spacing_mm,
+                                b.current,
+                                (s.underlay_length_mm - 0.15).max(0.15),
+                                true,
+                                cancel,
+                            )?
+                            .into_iter()
+                            .map(|(a, z)| (a, z, StitchKind::Running)),
+                        );
+                    }
+                    if !segments.is_empty() {
+                        let mut underlay_settings = s.clone();
+                        underlay_settings.tie_off = false;
+                        if edge_count > 0 {
+                            b.sew_segments(
+                                &segments[..edge_count],
+                                &underlay_rings,
+                                &underlay_settings,
+                                underlay_angle,
+                                PassOptions {
+                                    modern_satin: false,
+                                    role: StitchRole::Underlay,
+                                    initial_jump: true,
+                                },
+                            )?;
+                            underlay_settings.tie_in = false;
+                        }
+                        if edge_count < segments.len() {
+                            b.sew_segments(
+                                &segments[edge_count..],
+                                &underlay_rings,
+                                &underlay_settings,
+                                underlay_angle,
+                                PassOptions {
+                                    modern_satin: false,
+                                    role: StitchRole::Underlay,
+                                    initial_jump: edge_count == 0,
+                                },
+                            )?;
+                        }
+                        underlay_done = true;
                     }
                 }
             }
-            StitchKind::Tatami => segments.extend(
-                routed_fill_spans(
-                    &rings,
-                    angle,
-                    s.spacing_mm,
-                    s.pull_comp_mm,
-                    fill_cursor,
-                    b.max_length,
-                    segments.is_empty(),
-                )?
+            let top = routed_fill_spans(
+                &allowed,
+                angle,
+                s.spacing_mm,
+                b.current,
+                b.max_length,
+                !underlay_done,
+                cancel,
+            )?;
+            if top.is_empty() {
+                b.warn("This component has no top-fill rows; increase its physical size or decrease row spacing.",original.first().and_then(|r|r.first()).copied());
+                continue;
+            }
+            let mut top_settings = s.clone();
+            if underlay_done {
+                top_settings.tie_in = false;
+            }
+            let segments: Vec<_> = top
                 .into_iter()
-                .map(|(a, z)| (a, z, StitchKind::Tatami)),
-            ),
-            kind => segments.extend(
-                fill_spans(&rings, angle, s.spacing_mm, s.pull_comp_mm)?
-                    .into_iter()
-                    .map(|(a, z)| (a, z, kind)),
-            ),
+                .map(|(a, z)| (a, z, StitchKind::Tatami))
+                .collect();
+            b.sew_segments(
+                &segments,
+                &allowed,
+                &top_settings,
+                angle,
+                PassOptions {
+                    modern_satin: false,
+                    role: StitchRole::TopFill,
+                    initial_jump: !underlay_done,
+                },
+            )?;
         }
-        b.sew_segments(&segments, &rings, s, angle, false)?;
+        if hidden_components > 0 && retained_components == 0 {
+            intentionally_occluded.insert(object as *const Object as usize);
+            b.out.truncate(prior_commands);
+            b.metadata.truncate(prior_commands);
+            b.color = prior_color;
+            b.thread_active = prior_thread_active;
+            has_color = prior_has_color;
+        }
     }
     b.emit(b.current, Command::End);
     if b.overflow {
         return Err("Generation exceeds one million commands; increase spacing".into());
     }
-    Ok(b.out)
+    let mut plan = crate::commands::normalize_plan_with_limits(
+        MachinePlan {
+            stitches: b.out,
+            metadata: b.metadata,
+            warnings: b.warnings,
+        },
+        &project.machine_profile,
+    )?;
+    for object in project.objects.iter().filter(|o| o.visible) {
+        if intentionally_occluded.contains(&(object as *const Object as usize)) {
+            continue;
+        }
+        if !plan.stitches.iter().zip(&plan.metadata).any(|(s, m)| {
+            s.object_id == object.id
+                && s.command == Command::Stitch
+                && m.role == StitchRole::TopFill
+        }) {
+            plan.warnings.push(PlanWarning {object_id:object.id,point:object.flattened_contours().first().and_then(|r|r.first()).copied(),message:"Visible object has no top stitches after 0.1mm machine quantization. Increase its size, edit its geometry or exclude it explicitly.".into()});
+        }
+    }
+    if let Some(recipe) = &project.raster_recipe {
+        for issue in &recipe.issues {
+            if !plan.warnings.iter().any(|known| {
+                known.object_id == issue.object_id
+                    && known.point == issue.point
+                    && known.message == issue.message
+            }) {
+                plan.warnings.push(issue.clone());
+            }
+        }
+        for message in &recipe.warnings {
+            if !plan.warnings.iter().any(|known| known.message == *message) {
+                plan.warnings.push(PlanWarning {
+                    object_id: 0,
+                    point: None,
+                    message: message.clone(),
+                });
+            }
+        }
+    }
+    if project.objects.iter().any(|o| o.visible)
+        && !plan.stitches.iter().any(|s| s.command == Command::Stitch)
+    {
+        return Err("No visible object produces stitches on the 0.1mm machine grid; increase the physical size or edit the reported geometry".into());
+    }
+    Ok(plan)
 }
 
 #[cfg(test)]
@@ -1339,6 +2093,9 @@ mod tests {
     #[test]
     fn length_and_color_constraints() {
         let mut p = Project::demo();
+        // Deliberately keep both identical layers to exercise a color change.
+        // Automatic redundant-layer removal has its own geometry regressions.
+        p.layering.enabled = false;
         let mut second = p.objects[0].clone();
         second.id = 2;
         second.color = [200, 0, 0];
@@ -1361,8 +2118,8 @@ mod tests {
         p.objects[0].settings.kind = StitchKind::Running;
         let run = generate(&p).unwrap();
         p.objects[0].settings.kind = StitchKind::Satin;
-        let satin = generate(&p).unwrap();
-        assert!(satin.len() > run.len());
+        assert!(run.len() > 1);
+        assert!(generate(&p).unwrap_err().contains("paired rails"));
     }
     #[test]
     fn rotated_holes_and_density() {

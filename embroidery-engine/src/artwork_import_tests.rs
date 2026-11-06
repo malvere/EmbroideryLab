@@ -26,14 +26,16 @@ fn label_rect(shape: &egui::epaint::Shape, label: &str) -> Option<Rect> {
 #[test]
 fn pdf_import_actions_remain_visible_at_minimum_viewport_in_both_languages() {
     let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1024., 680.));
-    for language in [Language::Russian, Language::English] {
+    for (language, theme) in [
+        (Language::Russian, ui_theme::Theme::Dark),
+        (Language::Russian, ui_theme::Theme::Light),
+        (Language::English, ui_theme::Theme::Dark),
+        (Language::English, ui_theme::Theme::Light),
+    ] {
         let context = egui::Context::default();
-        let mut style = (*context.style()).clone();
-        style.visuals = egui::Visuals::light();
-        style.spacing.item_spacing = Vec2::new(8., 8.);
-        style.spacing.interact_size.y = 28.;
-        context.set_style(style);
+        theme.apply(&context);
         let mut app = Editor::workspace_with_language(language);
+        app.workspace.theme = theme;
         app.apply_pdf_page(PathBuf::from("synthetic-pages.pdf"), 1, page(), &context);
         let mut render = || {
             context.run(
@@ -47,15 +49,30 @@ fn pdf_import_actions_remain_visible_at_minimum_viewport_in_both_languages() {
         let _ = render();
         let _ = render();
         let output = render();
-        for label in ["Trace and open", "Cancel"] {
+        for label in ["Generate embroidery", "Cancel"] {
             let rect = output
                 .shapes
                 .iter()
                 .find_map(|clipped| label_rect(&clipped.shape, language.text(label)))
-                .unwrap_or_else(|| panic!("Missing {label} in {}", language.code()));
+                .unwrap_or_else(|| {
+                    let labels: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|clipped| match &clipped.shape {
+                            egui::epaint::Shape::Text(text) => {
+                                Some((text.galley.job.text.clone(), text.pos, clipped.clip_rect))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    panic!(
+                        "Missing {label} in {} / {theme:?}; rendered labels: {labels:?}",
+                        language.code()
+                    )
+                });
             assert!(
                 viewport.contains_rect(rect),
-                "{label} is outside the minimum viewport in {}: {rect:?}",
+                "{label} is outside the minimum viewport in {} / {theme:?}: {rect:?}",
                 language.code()
             );
         }

@@ -44,6 +44,10 @@ pub struct Settings {
     pub underlay_inset_mm: f64,
     pub underlay_spacing_mm: f64,
     pub underlay_length_mm: f64,
+    /// Absolute sparse Tatami direction. None retains legacy top angle + 90°;
+    /// Satin underlay follows the rails and does not use this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underlay_angle_deg: Option<f64>,
     pub pull_comp_mm: f64,
     pub tie_in: bool,
     pub tie_off: bool,
@@ -62,6 +66,7 @@ impl Default for Settings {
             underlay_inset_mm: 0.3,
             underlay_spacing_mm: 2.0,
             underlay_length_mm: 3.0,
+            underlay_angle_deg: None,
             pull_comp_mm: 0.0,
             tie_in: true,
             tie_off: true,
@@ -323,6 +328,34 @@ impl Object {
     }
 }
 
+/// Generation policy for removing fill hidden beneath later filled objects.
+/// The overlap is measured in millimetres inward from the upper artwork edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayeringSettings {
+    pub enabled: bool,
+    pub overlap_mm: f64,
+}
+impl Default for LayeringSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            overlap_mm: 0.2,
+        }
+    }
+}
+impl LayeringSettings {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.overlap_mm.is_finite() || !(0.0..=5.0).contains(&self.overlap_mm) {
+            return Err("Layer overlap must be finite and within 0–5mm".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
@@ -331,6 +364,11 @@ pub struct Project {
     pub objects: Vec<Object>,
     pub width_mm: f64,
     pub source_image: Option<crate::persistence::SourceImage>,
+    /// Full-source cleanup and import decisions. Stitch regeneration never retraces this recipe.
+    pub raster_recipe: Option<crate::persistence::RasterRecipe>,
+    pub machine_profile: MachineProfile,
+    #[serde(default, skip_serializing_if = "LayeringSettings::is_default")]
+    pub layering: LayeringSettings,
 }
 impl Default for Project {
     fn default() -> Self {
@@ -340,16 +378,34 @@ impl Default for Project {
             objects: Vec::new(),
             width_mm: 100.0,
             source_image: None,
+            raster_recipe: None,
+            machine_profile: Default::default(),
+            layering: Default::default(),
         }
     }
 }
 impl Project {
     /// Bound untrusted project input before flattening or stitch allocation.
     pub fn validate_limits(&self) -> Result<(), String> {
+        self.machine_profile.validate()?;
+        self.layering.validate()?;
+        if let Some(recipe) = &self.raster_recipe {
+            recipe.validate(self.source_image.as_ref())?;
+        }
         if let Some(source) = &self.source_image {
             source.validate()?;
         }
         for object in &self.objects {
+            if object
+                .settings
+                .underlay_angle_deg
+                .is_some_and(|angle| !angle.is_finite() || !(-180.0..=180.0).contains(&angle))
+            {
+                return Err(format!(
+                    "{}: underlay angle must be finite and within -180–180 degrees",
+                    object.name
+                ));
+            }
             if let Some(graph) = &object.centerline_graph {
                 graph.validate()?;
                 if object.running_paths != graph.paths() {
@@ -476,25 +532,44 @@ impl Project {
         }
         Ok(())
     }
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        self.validate_limits()?;
-        if !matches!(self.version, 1..=4) {
-            return Err("Unsupported project schema version".into());
-        }
-        let mut persisted = self.clone();
-        if self.source_image.is_some()
+    /// Resolve the schema required by the current decisions before either
+    /// generation or saving. Choosing a newer profile enables its Satin policy
+    /// immediately, so reopening the saved project cannot change the trajectory.
+    pub fn persisted_schema_version(&self) -> u32 {
+        let required = if !self.layering.is_default() {
+            6
+        } else if self.raster_recipe.is_some()
+            || self.machine_profile != MachineProfile::default()
+            || self
+                .objects
+                .iter()
+                .any(|o| o.settings.underlay_angle_deg.is_some())
+        {
+            5
+        } else if self.source_image.is_some()
             || self.objects.iter().any(|o| {
                 o.centerline_graph.is_some()
                     || o.settings.uses_v4()
                     || o.satin_column.as_ref().is_some_and(SatinColumn::uses_v4)
             })
         {
-            persisted.version = 4;
+            4
         } else if self.objects.iter().any(|o| !o.running_paths.is_empty()) {
-            persisted.version = persisted.version.max(3);
+            3
         } else if self.objects.iter().any(|o| o.satin_column.is_some()) {
-            persisted.version = persisted.version.max(2);
+            2
+        } else {
+            1
+        };
+        self.version.max(required)
+    }
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.validate_limits()?;
+        if !matches!(self.version, 1..=6) {
+            return Err("Unsupported project schema version".into());
         }
+        let mut persisted = self.clone();
+        persisted.version = self.persisted_schema_version();
         crate::persistence::save_project(&persisted, path)
     }
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -503,7 +578,7 @@ impl Project {
         }
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let project: Self = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        if !matches!(project.version, 1..=4) {
+        if !matches!(project.version, 1..=6) {
             return Err("Unsupported project schema version".into());
         }
         project.validate_limits()?;
@@ -535,12 +610,85 @@ impl Project {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MachineProfile {
+    /// Generic geometric cap, not an assertion about a particular machine.
+    pub max_stitch_mm: f64,
+    pub max_jump_mm: Option<f64>,
+    pub hoop_width_mm: Option<f64>,
+    pub hoop_height_mm: Option<f64>,
+    /// Experimental thread-cut policy. Shorter jumps retain thread.
+    pub trim_jump_mm: f64,
+    pub dst_trim_encoding: crate::dst::TrimEncoding,
+}
+impl Default for MachineProfile {
+    fn default() -> Self {
+        Self {
+            max_stitch_mm: 12.,
+            max_jump_mm: None,
+            hoop_width_mm: None,
+            hoop_height_mm: None,
+            trim_jump_mm: 10.,
+            dst_trim_encoding: Default::default(),
+        }
+    }
+}
+impl MachineProfile {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.max_stitch_mm.is_finite()
+            || !(0.3..=12.).contains(&self.max_stitch_mm)
+            || !self.trim_jump_mm.is_finite()
+            || !(0. ..=9990.).contains(&self.trim_jump_mm)
+            || [self.max_jump_mm, self.hoop_width_mm, self.hoop_height_mm]
+                .into_iter()
+                .flatten()
+                .any(|v| !v.is_finite() || v <= 0. || v > 9990.)
+        {
+            return Err("Machine profile contains invalid physical limits".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
     Stitch,
     Jump,
+    /// Thread-cut intention. Export profiles decide its machine representation.
+    Trim,
     ColorChange,
     End,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StitchRole {
+    #[default]
+    TopFill,
+    Underlay,
+    Travel,
+    Lock,
+    Control,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandMeta {
+    pub role: StitchRole,
+    pub pass_id: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PlanWarning {
+    pub object_id: u64,
+    pub point: Option<Point>,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MachinePlan {
+    pub stitches: Vec<Stitch>,
+    pub metadata: Vec<CommandMeta>,
+    pub warnings: Vec<PlanWarning>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Stitch {

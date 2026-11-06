@@ -19,20 +19,36 @@ fn project(paths: Vec<Vec<Point>>) -> Project {
     }
 }
 #[test]
-fn sub_filter_bends_are_preserved_before_machine_quantization() {
+fn editable_sub_grid_bends_survive_while_machine_output_is_normalized() {
     let path = vec![
         Point::new(0., 0.),
         Point::new(0.01, 0.),
         Point::new(0.01, 0.01),
         Point::new(0.2, 0.01),
     ];
-    let generated = engine::generate(&project(vec![path.clone()])).unwrap();
+    let p = project(vec![path.clone()]);
+    let generated = engine::generate_plan(&p).unwrap();
+    assert_eq!(p.objects[0].running_paths[0], path);
+    assert!(
+        generated
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("0.1mm machine grid"))
+    );
     let points: Vec<_> = generated
+        .stitches
         .iter()
         .filter(|s| s.command == Command::Stitch)
         .map(|s| s.point())
         .collect();
-    assert_eq!(points, path[1..]);
+    assert_eq!(points, vec![Point::new(0.2, 0.)]);
+    let decoded = dst::decode(&dst::encode(&generated.stitches, "subgrid").unwrap()).unwrap();
+    let decoded_points: Vec<_> = decoded
+        .iter()
+        .filter(|s| s.command == Command::Stitch)
+        .map(|s| s.point())
+        .collect();
+    assert_eq!(decoded_points, points);
 }
 
 #[test]

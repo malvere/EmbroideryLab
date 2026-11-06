@@ -1,8 +1,11 @@
 //! Independent embroidery geometry, generation and machine-format code.
 //! Coordinates are millimetres, x right, y down. DST conversion flips y.
+pub mod autodigitize;
 pub mod axis_edit;
 pub mod centerline;
 pub mod centerline_workflow;
+pub mod color_selection;
+pub mod commands;
 pub mod dsb;
 pub mod dst;
 pub mod engine;

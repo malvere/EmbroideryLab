@@ -215,6 +215,127 @@ fn machine_preview_and_active_drawing_guard_context_actions() {
     assert!(app.undo.is_empty());
 }
 
+#[test]
+fn locked_objects_remain_selectable_but_reject_direct_edit_handlers_until_unlocked() {
+    let actions: [fn(&mut Editor); 4] = [
+        Editor::reverse_selected,
+        |app| app.move_selected(true),
+        Editor::remove_selected,
+        Editor::delete_selection,
+    ];
+    for action in actions {
+        let mut app = editor(vec![rectangle(1, 0.), rectangle(2, 20.)]);
+        app.locked_objects.insert(1);
+        app.select_object(1);
+        app.select_context_at(Point::new(0., 0.));
+        assert_eq!(app.selected, 0, "A locked object remains selectable");
+        app.selected_node = Some((0, 0));
+        let before = document(&app);
+
+        action(&mut app);
+
+        assert_eq!(document(&app), before);
+        assert!(app.project.objects[0].visible);
+        assert!(app.undo.is_empty() && !app.dirty);
+        assert_eq!(app.selected_node, Some((0, 0)));
+
+        app.locked_objects.remove(&1);
+        action(&mut app);
+        assert_ne!(
+            document(&app),
+            before,
+            "Unlock restores the real editing action"
+        );
+        assert_eq!(app.undo.len(), 1);
+        app.undo_edit();
+        assert_eq!(document(&app), before);
+    }
+}
+
+#[test]
+fn moving_an_unlocked_object_does_not_reorder_a_locked_neighbor() {
+    let mut app = editor(vec![rectangle(1, 0.), rectangle(2, 20.)]);
+    app.locked_objects.insert(2);
+    let before = document(&app);
+    app.move_selected(true);
+    assert_eq!(document(&app), before);
+    assert!(app.undo.is_empty());
+
+    app.locked_objects.remove(&2);
+    app.move_selected(true);
+    assert_eq!(app.project.objects[0].id, 2);
+    assert_eq!(app.project.objects[1].id, 1);
+    assert_eq!(app.undo.len(), 1);
+}
+
+#[test]
+fn locked_group_selection_blocks_edits_and_history_remains_available() {
+    let mut app = editor(vec![rectangle(1, 0.), rectangle(2, 20.)]);
+    app.reverse_selected();
+    let reversed = document(&app);
+    app.locked_objects.insert(2);
+    app.merge_selection = vec![1, 2];
+
+    app.remove_selected();
+    app.reverse_selected();
+    assert_eq!(document(&app), reversed);
+    assert_eq!(app.undo.len(), 1);
+
+    app.undo_edit();
+    assert_ne!(
+        document(&app),
+        reversed,
+        "Workspace locks do not disable history"
+    );
+    app.redo_edit();
+    assert_eq!(document(&app), reversed);
+    assert!(app.locked_objects.contains(&2));
+}
+
+#[test]
+fn locked_satin_rejects_direct_column_changes_and_unlock_restores_them() {
+    let mut app = editor(vec![Object {
+        id: 8,
+        satin_column: Some(SatinColumn {
+            left: vec![Point::new(0., 0.), Point::new(0., 10.)],
+            right: vec![Point::new(4., 0.), Point::new(4., 10.)],
+            ..Default::default()
+        }),
+        settings: Settings {
+            kind: StitchKind::Satin,
+            length_mm: 5.,
+            ..Default::default()
+        },
+        ..Default::default()
+    }]);
+    let before = document(&app);
+    app.locked_objects.insert(8);
+    app.edit_column(|column| {
+        embroidery_lab::satin_edit::set_node(column, false, 0, Point::new(0., 1.))
+    });
+    assert_eq!(document(&app), before);
+    assert!(app.undo.is_empty() && !app.dirty);
+
+    app.generate();
+    app.wait_for_digitize();
+    assert!(
+        !app.error && !app.stale,
+        "Locked geometry still generates: {}",
+        app.message
+    );
+    assert!(!app.stitches.is_empty());
+    assert_eq!(document(&app), before);
+
+    app.locked_objects.remove(&8);
+    app.edit_column(|column| {
+        embroidery_lab::satin_edit::set_node(column, false, 0, Point::new(0., 1.))
+    });
+    assert_ne!(document(&app), before);
+    assert_eq!(app.undo.len(), 1);
+    app.undo_edit();
+    assert_eq!(document(&app), before);
+}
+
 fn frame(app: &mut Editor, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
     ctx.run(
         egui::RawInput {
@@ -318,6 +439,6 @@ fn nested_stitch_type_popup_changes_parameters_without_closing_context_menu() {
     assert_eq!(app.project.objects[0].settings.kind, StitchKind::Running);
     assert!(app.context_popup.is_some());
     assert!(label_position(&output, "Parameters").is_some());
-    assert!(label_position(&output, "Max stitch length (mm)").is_some());
+    assert!(label_position(&output, "Max length").is_some());
     assert!(app.dirty && app.stale);
 }

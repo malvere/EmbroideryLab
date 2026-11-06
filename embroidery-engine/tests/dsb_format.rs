@@ -59,8 +59,10 @@ fn all_supported_commands_remain_distinct_in_raw_roundtrip() {
     );
     let preview = dsb::preview(&records).unwrap();
     assert_eq!(preview.len(), records.len());
-    assert_eq!(preview[2].command, Command::Jump);
+    assert_eq!(preview[2].command, Command::Trim);
     assert_eq!(preview[2].point(), preview[1].point());
+    assert_eq!(embroidery_lab::dst::stats(&preview).trims, 1);
+    assert_eq!(embroidery_lab::dst::stats(&preview).jumps, 1);
     assert_eq!(
         preview
             .iter()
